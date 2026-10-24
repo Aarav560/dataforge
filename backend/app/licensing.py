@@ -1,0 +1,45 @@
+"""Map free-form license strings to usage classes.
+
+Classes: commercial (OK for commercial use), non_commercial, research_only, unknown.
+"""
+
+import re
+
+COMMERCIAL = "commercial"
+NON_COMMERCIAL = "non_commercial"
+RESEARCH_ONLY = "research_only"
+UNKNOWN = "unknown"
+
+_COMMERCIAL_IDS = {
+    "mit", "apache-2.0", "apache 2.0", "bsd", "bsd-2-clause", "bsd-3-clause", "bsd-3-clause-clear",
+    "isc", "unlicense", "cc0-1.0", "cc0", "cc-by-4.0", "cc-by-3.0", "cc-by-2.0", "cc-by-sa-4.0",
+    "cc-by-sa-3.0", "odc-by", "odbl", "pddl", "mpl-2.0", "lgpl-3.0", "lgpl-2.1", "gpl-3.0",
+    "gpl-2.0", "agpl-3.0", "wtfpl", "zlib", "bsl-1.0", "artistic-2.0", "openrail", "openrail++",
+    "creativeml-openrail-m", "bigscience-openrail-m", "llama2", "llama3", "llama3.1", "llama3.2",
+    "llama3.3", "gemma", "cdla-permissive-2.0", "cdla-permissive-1.0", "cdla-sharing-1.0",
+    "ecl-2.0", "epl-2.0", "afl-3.0", "c-uda", "etalab-2.0", "ogl-uk-3.0",
+}
+
+_RESEARCH_HINTS = ("research only", "research-only", "academic", "research purposes", "other-research")
+
+
+def classify_license(license_: str | None) -> str:
+    if not license_:
+        return UNKNOWN
+    raw = license_.strip().lower()
+    if raw in {"unknown", "other", "none", "noassertion", ""}:
+        return UNKNOWN
+    if any(h in raw for h in _RESEARCH_HINTS):
+        return RESEARCH_ONLY
+    # NC anywhere in a Creative Commons string, or spelled out.
+    if re.search(r"(^|[-\s(])nc([-\s)]|$)", raw) or "noncommercial" in raw or "non-commercial" in raw:
+        return NON_COMMERCIAL
+    if raw in _COMMERCIAL_IDS:
+        return COMMERCIAL
+    # Long-form names, e.g. Kaggle's "Attribution 4.0 International (CC BY 4.0)".
+    normalized = re.sub(r"[\s_]+", "-", raw)
+    if any(tok in normalized for tok in ("cc-by", "cc0", "public-domain", "odbl", "apache", "mit-license")):
+        return COMMERCIAL
+    if raw.startswith(("gpl", "gnu", "mit", "bsd", "apache", "database: open database")):
+        return COMMERCIAL
+    return UNKNOWN

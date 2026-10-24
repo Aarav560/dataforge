@@ -207,11 +207,11 @@ Dense, terminal-meets-mission-control layout. Dark theme, neon accents, monospac
 ## 10. Roadmap
 
 ### Phase 1 — MVP (core loop)
-- [ ] Next.js + FastAPI skeleton, Postgres, Redis
-- [ ] LLM planner (goal → needs → queries)
-- [ ] Connectors: Hugging Face, Kaggle, GitHub
-- [ ] Ranked results list with license badges
-- [ ] Download selected datasets
+- [x] Next.js + FastAPI skeleton, Postgres, Redis
+- [x] LLM planner (goal → needs → queries)
+- [x] Connectors: Hugging Face, Kaggle, GitHub
+- [x] Ranked results list with license badges
+- [x] Download selected datasets
 - Plain UI
 
 ### Phase 2 — Media & synthetic
