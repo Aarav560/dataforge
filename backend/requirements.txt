@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+httpx
+polars
+pyarrow
+duckdb
+numpy
+opencv-python-headless
+yt-dlp
+ddgs
+huggingface_hub
+beautifulsoup4
+defusedxml
+python-multipart
+pytest
