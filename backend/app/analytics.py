@@ -7,6 +7,8 @@ import duckdb
 TOP_K = 20
 HIST_BINS = 10
 CATEGORICAL_MAX = 50
+# Bookkeeping columns whose skew is expected (80/10/10 splits, review flags).
+NOT_CLASSES = {"split", "needs_review", "label_source", "label_confidence", "source_file", "chunk", "video", "game"}
 
 
 def _q(name: str) -> str:
@@ -56,7 +58,9 @@ def compute_stats(path: Path) -> dict:
             elif dtype == "BOOLEAN":
                 col["kind"] = "categorical"
             else:
-                col["kind"] = "categorical" if distinct <= CATEGORICAL_MAX else "text"
+                # Few distinct values that actually repeat; all-unique strings are text.
+                repeats = distinct <= max(1, 0.5 * (total - nulls))
+                col["kind"] = "categorical" if distinct <= CATEGORICAL_MAX and repeats else "text"
                 if col["kind"] == "text":
                     avg_len = con.execute(f"SELECT avg(length({q}::VARCHAR)) FROM {src}").fetchone()[0]
                     col["avg_length"] = avg_len
@@ -76,7 +80,9 @@ def class_imbalance(stats: dict) -> list[dict]:
     out = []
     for col in stats.get("columns", []):
         top = col.get("top") or []
-        if col.get("kind") != "categorical" or len(top) < 2 or len(top) >= TOP_K:
+        if col.get("kind") != "categorical" or col["name"] in NOT_CLASSES or col["type"] == "BOOLEAN":
+            continue
+        if len(top) < 2 or len(top) >= TOP_K:
             continue
         hi, lo = top[0]["count"], top[-1]["count"]
         if lo and hi / lo >= 5:

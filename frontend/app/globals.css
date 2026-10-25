@@ -109,3 +109,14 @@ body {
 .flexlayout__tab_button--selected {
   color: var(--accent) !important;
 }
+
+/* Rendered dataset cards. */
+.card-md h1 { font-size: 1.15rem; font-weight: 700; margin: 0.5rem 0; color: var(--accent); }
+.card-md h2 { font-size: 0.95rem; font-weight: 600; margin: 1rem 0 0.35rem; border-bottom: 1px solid var(--border); }
+.card-md p, .card-md ul, .card-md ol { margin: 0.35rem 0; }
+.card-md ul { list-style: disc; padding-left: 1.25rem; }
+.card-md ol { list-style: decimal; padding-left: 1.25rem; }
+.card-md a { color: #38bdf8; }
+.card-md code { font-family: ui-monospace, Menlo, monospace; font-size: 0.85em; }
+.card-md table { border-collapse: collapse; font-size: 12px; margin: 0.35rem 0; }
+.card-md th, .card-md td { border: 1px solid var(--border); padding: 2px 6px; text-align: left; }

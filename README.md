@@ -27,20 +27,34 @@ Implemented so far:
 - Pipeline canvas (React Flow): add steps, wire them, edit parameters, save and run with live step status
 - Stats HUD (rows, results, bytes gathered, active workers, API quota) and a Ctrl+K command bar (`/search`, `/pipeline`, `/download`, `/show`, `/open`)
 
+**Phase 4: dataset platform**
+- Transform library: load/stack tables, select/rename, clean, dedupe, filter, stratified or grouped splits, sampling, image indexing, text chunking, inline rows
+- Web pages → text: robots.txt-aware crawler that refuses private addresses, plus PII detection with redact/drop/flag
+- Templates: web → text corpus, images → labeled set, multiple CSVs → unified table
+- Version stats (DuckDB): nulls, distinct counts, histograms, class balance, image sample grid; row and schema diffs between versions
+- Auto dataset cards (Hugging Face-compatible): sources, combined license terms, build steps, detected limitations; Claude writes the summary when keyed
+- Exports: Parquet, CSV, JSONL, HF layout, COCO, YOLO, TFRecord (no TensorFlow needed); push to the Hub; license gate blocks publishing incompatible or non-redistributable combinations
+- Hub index: nightly sync of Hugging Face, Kaggle and OpenML metadata with local embeddings (bge-small); searches use it first, plus a semantic cache of recent queries
+- Auto-labeling with Claude (text or images) or keyword fallback; low-confidence rows go to a keyboard-driven review queue; applying reviews creates a derived version
+
 ## Layout
 
 ```
 backend/            FastAPI app, arq worker, tests
   app/main.py       REST API
   app/planner.py    goal → plan (Claude structured output / heuristic fallback)
-  app/connectors/   huggingface, kaggle, github, youtube, arxiv, semanticscholar
+  app/connectors/   huggingface, kaggle, openml, github, youtube, arxiv, semanticscholar
   app/ranking.py    relevance + quality scoring
   app/licensing.py  license string → commercial / non_commercial / research_only / unknown
   app/jobs.py       search fan-out, download and pipeline jobs
-  app/pipelines/    engine.py (DAG executor), steps.py, video.py, templates.py
+  app/pipelines/    engine.py (DAG executor), steps*.py, video.py, templates.py
   app/synthetic/    tetris.py (engine + agents), render.py, advisor.py
   app/routes_datasets.py  pipelines, versions, synthetic advice
   app/routes_live.py      WebSocket events, stats, previews, license matrix, asset files
+  app/analytics.py  DuckDB stats and diffs
+  app/cards.py      dataset cards
+  app/exports.py    export formats and the license gate
+  app/hubindex.py   hub metadata index and semantic query cache (app/embeddings.py)
   app/events.py     event bus (in-process, or Redis pub/sub across worker processes)
   app/worker.py     arq worker entry point
 frontend/           Next.js (App Router) UI; proxies /api/* to the backend
@@ -81,10 +95,12 @@ The browser connects to the backend's WebSocket directly (`ws://<host>:8000` by 
 | `ANTHROPIC_API_KEY` | Enables the Claude planner (`claude-opus-5-5`, structured output, server-side refusal fallback) |
 | `GITHUB_TOKEN` | Raises GitHub search rate limits (unauthenticated search allows 10 requests/min) |
 | `KAGGLE_USERNAME`, `KAGGLE_KEY` | Required for Kaggle downloads (search works without) |
-| `HF_TOKEN` | Access to gated Hugging Face repos |
+| `HF_TOKEN` | Access to gated Hugging Face repos, and pushing exports to the Hub |
 | `YOUTUBE_API_KEY` | Use the YouTube Data API for search (yt-dlp is used otherwise) |
 | `S2_API_KEY` | Semantic Scholar key; unauthenticated calls are rate-limited hard |
-| `DATA_DIR` | Where downloads land (default `backend/data`) |
+| `DATA_DIR` | Where downloads, versions and exports land (default `backend/data`) |
+| `INDEX_AUTO_SYNC` | Sync the hub index nightly (default `true`; in-process mode syncs when the index is empty or stale) |
+| `INDEX_SIZE_PER_SOURCE` | Entries per source and kind in the hub index (default 5000) |
 | `MAX_DOWNLOAD_BYTES` | Per-asset download cap (default 5 GiB) |
 
 ## API
@@ -111,6 +127,15 @@ The browser connects to the backend's WebSocket directly (`ws://<host>:8000` by 
 | `GET` | `/api/results/{id}/preview` | remote preview of a result |
 | `POST` | `/api/license-matrix` | `{result_ids}` → rights per source |
 | `GET` | `/api/assets/{id}/files`, `/preview`, `/file` | browse downloaded files |
+| `GET` | `/api/versions/{id}/diff` | diff against `?against=`, the parent, or the previous version |
+| `POST` | `/api/versions/{id}/card` | regenerate the dataset card |
+| `GET` | `/api/export-formats`, `/api/versions/{id}/export-check` | formats and license verdict |
+| `POST` | `/api/versions/{id}/exports` | `{format, push_to_hub, repo_id, private}` |
+| `GET` | `/api/exports/{id}/download` | zip of an export |
+| `GET` | `/api/versions/{id}/reviews` | review queue (`status`, paging) |
+| `POST` | `/api/reviews/{id}` | `{action: accept\|correct\|reject\|reset, label}` |
+| `POST` | `/api/versions/{id}/apply-reviews` | derived version with reviews applied |
+| `GET`/`POST` | `/api/index`, `/api/index/sync` | hub index status / sync now |
 
 ## Tests
 
@@ -121,6 +146,8 @@ cd frontend && npm run typecheck && npm run build
 
 ## Not yet built
 
-Phases 4–5: diffs between versions, dataset cards, export formats, pre-indexing and semantic cache, auto-labeling, and auth (Clerk / Auth.js).
+Phase 5 (team projects and auth, plugin connectors, train-a-baseline).
 
-The video template is tuned for clean, high-contrast footage. For real broadcasts, set a manual playfield box on the *Detect board* step if auto-detection fails. The `projects.user_id` column is in place for auth, but the API is currently single-user and unauthenticated, so don't expose it publicly.
+The video template is tuned for clean, high-contrast footage. For real broadcasts, set a manual playfield box on the *Detect board* step if auto-detection fails. The API is currently single-user and unauthenticated, so don't expose it publicly.
+
+The first index sync downloads the ~65 MB embedding model (cached in `DATA_DIR/models`) and takes a few minutes; without it, the index falls back to hashed bag-of-words vectors.

@@ -7,6 +7,27 @@ from .base import Connector, RawResult, parse_dt, stream_to_file
 API = "https://www.kaggle.com/api/v1"
 
 
+def parse_item(item: dict) -> RawResult | None:
+    ref = item.get("ref")
+    if not ref or item.get("isPrivate"):
+        return None
+    return RawResult(
+        source="kaggle",
+        kind="dataset",
+        external_id=ref,
+        url=item.get("url") or f"https://www.kaggle.com/datasets/{ref}",
+        title=item.get("title") or ref,
+        description=item.get("subtitle") or item.get("description") or None,
+        size_bytes=item.get("totalBytes"),
+        license=item.get("licenseName"),
+        updated_at=parse_dt(item.get("lastUpdated")),
+        downloads=item.get("downloadCount"),
+        likes=item.get("voteCount"),
+        usability=item.get("usabilityRating"),
+        meta={"thumbnail": item.get("thumbnailImageUrl")},
+    )
+
+
 class KaggleConnector(Connector):
     name = "kaggle"
     kinds = frozenset({"dataset"})
@@ -22,29 +43,12 @@ class KaggleConnector(Connector):
             auth=self.auth,
         )
         resp.raise_for_status()
-        out = []
-        for item in resp.json()[:limit]:
-            ref = item.get("ref")
-            if not ref or item.get("isPrivate"):
-                continue
-            out.append(
-                RawResult(
-                    source=self.name,
-                    kind="dataset",
-                    external_id=ref,
-                    url=item.get("url") or f"https://www.kaggle.com/datasets/{ref}",
-                    title=item.get("title") or ref,
-                    description=item.get("subtitle") or item.get("description") or None,
-                    size_bytes=item.get("totalBytes"),
-                    license=item.get("licenseName"),
-                    updated_at=parse_dt(item.get("lastUpdated")),
-                    downloads=item.get("downloadCount"),
-                    likes=item.get("voteCount"),
-                    usability=item.get("usabilityRating"),
-                    meta={"thumbnail": item.get("thumbnailImageUrl")},
-                )
-            )
-        return out
+        return [r for item in resp.json()[:limit] if (r := parse_item(item)) is not None]
+
+    async def list_page(self, page: int) -> list[RawResult]:
+        resp = await self.client.get(f"{API}/datasets/list", params={"page": page, "sortBy": "votes"}, auth=self.auth)
+        resp.raise_for_status()
+        return [r for item in resp.json() if (r := parse_item(item)) is not None]
 
     async def resolve(self, ref) -> RawResult | None:
         slug = ref.external_id.split("/")[-1]

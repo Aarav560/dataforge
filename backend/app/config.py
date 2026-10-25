@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     max_download_bytes: int = 5 * 1024**3
     # Linked resources resolved per paper search, per need.
     max_followed_links: int = 10
+    # Hub index: answer searches locally when it has enough good matches.
+    index_first: bool = True
+    index_size_per_source: int = 5000
+    index_min_hits: int = 5
+    # None picks a default per embedding backend (see embeddings.default_threshold).
+    index_min_similarity: float | None = None
+    index_auto_sync: bool = True
+    index_sync_hours: int = 24
+    # Semantic query cache.
+    cache_ttl_hours: int = 24
+    cache_similarity: float = 0.95
 
 
 @lru_cache

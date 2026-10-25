@@ -14,6 +14,8 @@ export const SOURCE_COLORS: Record<string, string> = {
   plan: "#4ade80",
   gather: "#60a5fa",
   pipeline: "#c084fc",
+  export: "#34d399",
+  openml: "#e879f9",
 };
 
 const TONE: Record<string, string> = { info: "", ok: "text-[var(--accent)]", warn: "text-amber-400", error: "text-red-400" };

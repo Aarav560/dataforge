@@ -228,11 +228,11 @@ Dense, terminal-meets-mission-control layout. Dark theme, neon accents, monospac
 - [x] Pipeline canvas (React Flow)
 
 ### Phase 4 — Dataset platform
-- [ ] Versioning + diffs
-- [ ] Auto dataset cards
-- [ ] All export formats + push-to-HF
-- [ ] Pre-indexed hub metadata + semantic cache
-- [ ] Auto-labeling + human review queue
+- [x] Versioning + diffs
+- [x] Auto dataset cards
+- [x] All export formats + push-to-HF
+- [x] Pre-indexed hub metadata + semantic cache
+- [x] Auto-labeling + human review queue
 
 ### Phase 5 — Power features
 - [ ] Shared/team projects

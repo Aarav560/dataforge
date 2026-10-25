@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -46,9 +47,18 @@ def _fail_interrupted_jobs() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    if not get_settings().redis_url:
+    settings = get_settings()
+    scheduler = None
+    if not settings.redis_url:
         _fail_interrupted_jobs()
+        # With Redis, the arq worker's cron job does this instead.
+        if settings.index_auto_sync:
+            from .jobs import index_sync_loop
+
+            scheduler = asyncio.create_task(index_sync_loop(settings))
     yield
+    if scheduler:
+        scheduler.cancel()
     await jobqueue.close()
 
 
@@ -97,6 +107,19 @@ def _project_out(db: Session, project: Project) -> ProjectOut:
         created_at=project.created_at,
         needs=[_need_out(db, n) for n in project.needs],
     )
+
+
+@app.get("/api/index")
+def index_status() -> dict:
+    from . import hubindex
+
+    return hubindex.stats()
+
+
+@app.post("/api/index/sync", status_code=202)
+async def index_sync() -> dict:
+    await jobqueue.enqueue("sync_index")
+    return {"queued": True}
 
 
 @app.get("/api/health")

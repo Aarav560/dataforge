@@ -56,7 +56,7 @@ def test_full_flow(connectors):
             f"/api/projects/{pid}/needs",
             json={"description": "Gameplay logs", "kind": "dataset", "queries": ["tetris replays"]},
         ).json()
-        assert set(added["queries"]) == {"huggingface", "kaggle", "github"}
+        assert set(added["queries"]) == {"huggingface", "kaggle", "openml", "github"}
 
         assert client.post(f"/api/projects/{pid}/search").status_code == 202
         project = _wait(client, pid, lambda p: all(n["status"] in ("done", "error") for n in p["needs"]))

@@ -115,8 +115,20 @@ export function CommandBar({ projects, onPlan, onResetLayout, onShowPanel }: Pro
                   </Item>
                 </Command.Group>
               )}
+              <Command.Group heading="Index">
+                <Item value="/index sync" onSelect={() => run(async () => { await api.syncIndex(); })}>
+                  /index <span className="muted">sync hub metadata now</span>
+                </Item>
+              </Command.Group>
+              {ws.versions.some((v) => v.status === "done") && (
+                <Command.Group heading="Export">
+                  <Item value="/export open" onSelect={() => run(() => onShowPanel("versions"))}>
+                    /export <span className="muted">open dataset workspace</span>
+                  </Item>
+                </Command.Group>
+              )}
               <Command.Group heading="View">
-                {["plan", "feed", "graph", "results", "canvas", "preview", "licenses", "datasets"].map((id) => (
+                {["plan", "feed", "graph", "results", "canvas", "preview", "licenses", "datasets", "versions", "review"].map((id) => (
                   <Item key={id} value={`/show ${id}`} onSelect={() => run(() => onShowPanel(id))}>
                     /show <span className="muted">{id}</span>
                   </Item>

@@ -45,7 +45,7 @@ def classify_license(license_: str | None) -> str:
     normalized = re.sub(r"[\s_]+", "-", raw)
     if any(tok in normalized for tok in ("cc-by", "cc0", "public-domain", "odbl", "apache", "mit-license")):
         return COMMERCIAL
-    if raw.startswith(("gpl", "gnu", "mit", "bsd", "apache", "database: open database")):
+    if raw.startswith(("gpl", "gnu", "mit", "bsd", "apache", "database: open database", "cc by ")):
         return COMMERCIAL
     return UNKNOWN
 

@@ -15,7 +15,7 @@ from pathlib import Path
 import httpx
 from sqlalchemy import delete, select
 
-from . import events, quota, ranking
+from . import embeddings, events, hubindex, quota, ranking
 from .config import Settings, get_settings
 from .connectors import Connector, LinkRef, RawResult, build_connectors
 from .db import SessionLocal
@@ -160,12 +160,28 @@ async def search_need(
             db.commit()
             description, kind, queries = need.description, need.kind, dict(need.queries or {})
 
+        indexed = await asyncio.to_thread(hubindex.indexed_sources)
+
         async def one(source: str, query: str, conn: Connector):
+            """Answer from the semantic cache, then the hub index, then the live API."""
             started = time.monotonic()
             try:
-                return source, query, await conn.search(query, kind, settings.results_per_query), time.monotonic() - started
+                cached = await asyncio.to_thread(hubindex.cache_get, source, kind, query, settings)
+                if cached is not None:
+                    return source, query, cached, time.monotonic() - started, "cache"
+                if settings.index_first and (source, kind) in indexed:
+                    hits = await asyncio.to_thread(
+                        hubindex.search_index, source, kind, query, settings.results_per_query,
+                        settings.index_min_similarity or embeddings.default_threshold(),
+                    )
+                    # OpenML's live search is exact-name only, so any index hit beats it.
+                    if len(hits) >= settings.index_min_hits or (hits and source == "openml"):
+                        return source, query, [r for r, _ in hits], time.monotonic() - started, "index"
+                found = await conn.search(query, kind, settings.results_per_query)
+                await asyncio.to_thread(hubindex.cache_put, source, kind, query, found)
+                return source, query, found, time.monotonic() - started, "live"
             except Exception as exc:  # reported per source, never fatal for the need
-                return source, query, exc, time.monotonic() - started
+                return source, query, exc, time.monotonic() - started, "live"
 
         calls = [
             one(source, q, conn)
@@ -179,7 +195,7 @@ async def search_need(
         best: dict[tuple[str, str], tuple] = {}
         errors: list[str] = []
         for fut in asyncio.as_completed(calls):
-            source, query, outcome, elapsed = await fut
+            source, query, outcome, elapsed, origin = await fut
             if isinstance(outcome, BaseException):
                 log.warning("search %s %r failed: %s", source, query, outcome)
                 errors.append(f"{source} ({query}): {outcome}")
@@ -189,7 +205,7 @@ async def search_need(
             changed = _merge(best, [_score(raw, description, query) for raw in outcome])
             ids = _save_results(need_id, [best[k] for k in changed])
             events.publish(project_id, "hits", need_id=need_id, source=source, query=query, count=len(outcome),
-                           new=len(ids), ms=round(elapsed * 1000), result_ids=ids,
+                           new=len(ids), ms=round(elapsed * 1000), result_ids=ids, origin=origin,
                            titles=[best[k][0].title for k in changed[:5]])
 
         before = set(best)
@@ -320,6 +336,7 @@ async def finalize_version(version_id: int, settings: Settings) -> None:
         version = db.get(DatasetVersion, version_id)
         path = Path(version.storage_path)
     stats = await asyncio.to_thread(compute_stats, path)
+    await asyncio.to_thread(_create_review_items, version_id, path)
     with SessionLocal() as db:
         version = db.get(DatasetVersion, version_id)
         version.stats = stats
@@ -329,6 +346,119 @@ async def finalize_version(version_id: int, settings: Settings) -> None:
         version.status = "done"
         version.finished_at = datetime.now(timezone.utc)
         db.commit()
+
+
+MAX_REVIEW_ITEMS = 5000
+
+
+def label_config(graph: dict) -> dict | None:
+    """Settings of the last auto-label step in a graph, if any."""
+    nodes = [n for n in graph.get("nodes", []) if n.get("type") == "auto_label"]
+    if not nodes:
+        return None
+    params = nodes[-1].get("params") or {}
+    return {
+        "labels": [l.strip() for l in str(params.get("labels", "")).split(",") if l.strip()],
+        "column": params.get("column") or "text",
+        "output": params.get("output") or "label",
+    }
+
+
+def _create_review_items(version_id: int, path: Path) -> None:
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    from .models import ReviewItem
+
+    with SessionLocal() as db:
+        version = db.get(DatasetVersion, version_id)
+        cfg = label_config(version.graph_json or {}) or (version.graph_json or {}).get("labels")
+    t = pq.read_table(path)
+    if "needs_review" not in t.column_names or not cfg:
+        return
+    out = cfg["output"]
+    idx = pc.indices_nonzero(pc.fill_null(t.column("needs_review"), False)).to_pylist()[:MAX_REVIEW_ITEMS]
+    if not idx:
+        return
+    rows = t.take(idx).to_pylist()
+    items = []
+    for i, r in zip(idx, rows):
+        if cfg["column"] == "image":
+            payload = {"asset_id": r.get("asset_id"), "path": r.get("path")}
+        else:
+            payload = {"text": str(r.get(cfg["column"]) or "")[:2000]}
+        items.append(ReviewItem(version_id=version_id, row_index=i, payload=payload, label_column=out,
+                                proposed_label=r.get(out), confidence=r.get("label_confidence")))
+    with SessionLocal() as db:
+        db.add_all(items)
+        db.commit()
+
+
+async def apply_reviews(version_id: int, *, settings: Settings | None = None) -> None:
+    """Write a new version with reviewed labels applied and rejected rows dropped."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from sqlalchemy import func
+
+    from .models import ReviewItem
+
+    settings = settings or get_settings()
+    new_id = project_id = None
+    try:
+        with SessionLocal() as db:
+            parent = db.get(DatasetVersion, version_id)
+            project_id = parent.project_id
+            reviews = db.scalars(select(ReviewItem).where(ReviewItem.version_id == version_id,
+                                                          ReviewItem.status != "pending")).all()
+            decisions = {r.row_index: (r.status, r.final_label, r.label_column) for r in reviews}
+            latest = db.scalar(select(func.max(DatasetVersion.version)).where(DatasetVersion.project_id == project_id)) or 0
+            cfg = label_config(parent.graph_json or {})
+            child = DatasetVersion(
+                project_id=project_id, pipeline_id=parent.pipeline_id, parent_version_id=parent.id, version=latest + 1,
+                graph_json={**(parent.graph_json or {}), "derived": {"from_version": parent.version, "op": "apply_reviews",
+                                                                     "reviews": len(decisions)},
+                            **({"labels": cfg} if cfg else {})},
+            )
+            db.add(child)
+            db.commit()
+            new_id, parent_path = child.id, Path(parent.storage_path)
+        events.publish(project_id, "version_started", version_id=new_id)
+        rows = (await asyncio.to_thread(pq.read_table, parent_path)).to_pylist()
+        table = pq.read_table(parent_path)
+        kept = []
+        for i, r in enumerate(rows):
+            status, label, column = decisions.get(i, (None, None, None))
+            if status == "rejected":
+                continue
+            if status in ("accepted", "corrected"):
+                r = {**r, column: label, "needs_review": False}
+                if "label_source" in r:
+                    r["label_source"] = "human"
+                if "label_confidence" in r:
+                    r["label_confidence"] = 1.0
+            kept.append(r)
+        out_dir = settings.data_dir / "versions" / str(new_id)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "data.parquet"
+        new_table = pa.Table.from_pylist(kept, schema=table.schema)
+        await asyncio.to_thread(pq.write_table, new_table, path)
+        with SessionLocal() as db:
+            child = db.get(DatasetVersion, new_id)
+            child.row_count = new_table.num_rows
+            child.schema = [{"name": f.name, "type": str(f.type)} for f in new_table.schema]
+            child.storage_path = str(path)
+            child.log = f"applied {len(decisions)} reviews to v{parent.version}; dropped {len(rows) - len(kept)} rows"
+            db.commit()
+        await finalize_version(new_id, settings)
+        events.publish(project_id, "version_done", version_id=new_id, rows=new_table.num_rows)
+    except Exception as exc:
+        log.warning("apply_reviews %s failed: %s", version_id, exc)
+        if new_id is not None:
+            with SessionLocal() as db:
+                child = db.get(DatasetVersion, new_id)
+                child.status, child.error = "error", str(exc)
+                db.commit()
+        events.publish(project_id, "version_error", version_id=new_id, error=str(exc)[:300])
 
 
 def _project_asset_paths(db, project_id: int) -> dict[int, Path]:
@@ -401,3 +531,74 @@ async def run_pipeline(version_id: int, *, settings: Settings | None = None) -> 
                 version.finished_at = datetime.now(timezone.utc)
                 db.commit()
         events.publish(project_id, "version_error", version_id=version_id, error=str(exc)[:300])
+
+
+async def sync_index(*, settings: Settings | None = None) -> dict:
+    report = await hubindex.sync(settings)
+    await asyncio.to_thread(hubindex.cache_prune, settings or get_settings())
+    log.info("hub index sync: %s", report)
+    return report
+
+
+async def index_sync_loop(settings: Settings) -> None:
+    """In-process scheduler: sync when the index is empty or older than the interval."""
+    from datetime import timedelta
+
+    await asyncio.sleep(30)
+    while True:
+        entries = (await asyncio.to_thread(hubindex.stats))["entries"]
+        newest = max((e["synced_at"] for e in entries if e["synced_at"]), default=None)
+        if newest is not None and newest.tzinfo is None:
+            newest = newest.replace(tzinfo=timezone.utc)
+        due = newest is None or datetime.now(timezone.utc) - newest > timedelta(hours=settings.index_sync_hours)
+        if due:
+            try:
+                await sync_index(settings=settings)
+            except Exception:
+                log.exception("scheduled index sync failed")
+        await asyncio.sleep(3600)
+
+
+async def run_export(export_id: int, *, settings: Settings | None = None) -> None:
+    import pyarrow.parquet as pq
+
+    from . import exports
+    from .models import Export
+
+    settings = settings or get_settings()
+    project_id = None
+    try:
+        with SessionLocal() as db:
+            exp = db.get(Export, export_id)
+            version = db.get(DatasetVersion, exp.version_id)
+            project_id, fmt, repo, private = version.project_id, exp.format, exp.push_repo, exp.private
+            source_path, card = Path(version.storage_path), version.card_md
+            asset_paths = _project_asset_paths(db, version.project_id)
+            exp.status = "running"
+            db.commit()
+            version_id = version.id
+        events.publish(project_id, "export_started", export_id=export_id, format=fmt)
+        out = settings.data_dir / "versions" / str(version_id) / "exports" / f"{export_id}-{fmt}"
+        table = await asyncio.to_thread(pq.read_table, source_path)
+        files = await asyncio.to_thread(exports.export, table, fmt, out, asset_paths, card)
+        zip_path = await asyncio.to_thread(exports.zip_dir, out, out.with_suffix(".zip"))
+        hub_url = None
+        if repo:
+            if not settings.hf_token:
+                raise exports.ExportError("HF_TOKEN is not set on the server")
+            hub_url = await asyncio.to_thread(exports.push_to_hub, out, repo, settings.hf_token, private)
+        with SessionLocal() as db:
+            exp = db.get(Export, export_id)
+            exp.status, exp.zip_path, exp.files, exp.hub_url = "done", str(zip_path), len(files), hub_url
+            version = db.get(DatasetVersion, version_id)
+            version.export_paths = {**(version.export_paths or {}), fmt: str(zip_path), **({"hub": hub_url} if hub_url else {})}
+            db.commit()
+        events.publish(project_id, "export_done", export_id=export_id, format=fmt, files=len(files), hub_url=hub_url)
+    except Exception as exc:
+        log.warning("export %s failed: %s", export_id, exc)
+        with SessionLocal() as db:
+            exp = db.get(Export, export_id)
+            if exp is not None:
+                exp.status, exp.error = "error", str(exc)
+                db.commit()
+        events.publish(project_id, "export_error", export_id=export_id, error=str(exc)[:300])

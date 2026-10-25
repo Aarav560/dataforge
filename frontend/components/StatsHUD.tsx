@@ -1,11 +1,19 @@
 "use client";
 
-import { formatBytes } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { api, formatBytes, type IndexStatus } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
 
 export function StatsHUD() {
   const { stats, connected, versions } = useWorkspace();
+  const [index, setIndex] = useState<IndexStatus | null>(null);
+  useEffect(() => {
+    api.indexStatus().then(setIndex).catch(() => {});
+    const t = setInterval(() => api.indexStatus().then(setIndex).catch(() => {}), 60_000);
+    return () => clearInterval(t);
+  }, []);
   if (!stats) return null;
+  const indexed = index?.entries.reduce((a, e) => a + e.count, 0) ?? 0;
   const quota = Object.entries(stats.quota);
   // ETA from bytes remaining across downloads with a known size.
   const remaining = stats.downloads.reduce((acc, d) => acc + (d.size ? Math.max(d.size - d.bytes, 0) : 0), 0);
@@ -26,6 +34,7 @@ export function StatsHUD() {
           warn={q.limit ? q.remaining / q.limit < 0.1 : q.remaining < 5}
         />
       ))}
+      <Stat label="index" value={indexed.toLocaleString()} hint={index ? `${index.cached_queries} cached queries` : undefined} />
       <span className={`ml-auto ${connected ? "text-[var(--accent)]" : "text-amber-400"}`}>{connected ? "● stream" : "○ polling"}</span>
     </footer>
   );

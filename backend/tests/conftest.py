@@ -7,6 +7,8 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_tmp / 'test.db'}"
 os.environ["DATA_DIR"] = str(_tmp / "data")
 os.environ["REDIS_URL"] = ""
 os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["DATAFORGE_EMBEDDINGS"] = "hashing"
+os.environ["INDEX_AUTO_SYNC"] = "false"
 
 import pytest  # noqa: E402
 

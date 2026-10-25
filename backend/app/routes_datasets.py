@@ -288,3 +288,172 @@ async def regenerate_card(version_id: int, db: Session = Depends(get_db)):
     version.card_md = await build_card(db, version, get_settings())
     db.commit()
     return version
+
+
+class ExportRequest(BaseModel):
+    format: str
+    push_to_hub: bool = False
+    repo_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][\w.-]{0,95}/[A-Za-z0-9][\w.-]{0,95}$")
+    private: bool = True
+    acknowledge_unknown_licenses: bool = False
+
+
+class ExportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    version_id: int
+    format: str
+    status: str
+    push_repo: str | None
+    private: bool
+    files: int
+    hub_url: str | None
+    warnings: list
+    error: str | None
+    created_at: datetime
+
+
+@router.get("/export-formats")
+def export_formats() -> dict:
+    from .exports import FORMATS
+
+    return FORMATS
+
+
+def _export_check(db: Session, version: DatasetVersion, fmt: str, push: bool, ack: bool) -> dict:
+    from .cards import version_sources
+    from .exports import check
+
+    return check(version_sources(db, version.graph_json or {}), fmt, push, ack)
+
+
+@router.get("/versions/{version_id}/export-check")
+def export_check(version_id: int, format: str = "parquet", push: bool = False, acknowledge: bool = False,
+                 db: Session = Depends(get_db)) -> dict:
+    return _export_check(db, _version(db, version_id), format, push, acknowledge)
+
+
+@router.post("/versions/{version_id}/exports", response_model=ExportOut, status_code=202)
+async def start_export(version_id: int, body: ExportRequest, db: Session = Depends(get_db)):
+    from .exports import FORMATS
+    from .models import Export
+
+    version = _version(db, version_id)
+    _done_path(version)
+    if body.format not in FORMATS:
+        raise HTTPException(422, f"unknown format {body.format!r}")
+    if body.push_to_hub and (body.format != "hf" or not body.repo_id):
+        raise HTTPException(422, "pushing to the Hub needs format 'hf' and a repo_id like 'user/name'")
+    verdict = _export_check(db, version, body.format, body.push_to_hub, body.acknowledge_unknown_licenses)
+    if not verdict["allowed"]:
+        raise HTTPException(403, " ".join(verdict["blockers"]))
+    exp = Export(version_id=version.id, format=body.format, push_repo=body.repo_id if body.push_to_hub else None,
+                 private=body.private, warnings=verdict["warnings"])
+    db.add(exp)
+    db.commit()
+    try:
+        await jobqueue.enqueue("run_export", exp.id)
+    except jobqueue.QueueUnavailable as exc:
+        exp.status, exp.error = "error", str(exc)
+        db.commit()
+        raise
+    return exp
+
+
+@router.get("/versions/{version_id}/exports", response_model=list[ExportOut])
+def list_exports(version_id: int, db: Session = Depends(get_db)):
+    from .models import Export
+
+    _version(db, version_id)
+    return db.scalars(select(Export).where(Export.version_id == version_id).order_by(Export.id.desc())).all()
+
+
+@router.get("/exports/{export_id}/download")
+def download_export(export_id: int, db: Session = Depends(get_db)):
+    from fastapi.responses import FileResponse
+
+    from .models import Export
+
+    exp = db.get(Export, export_id)
+    if exp is None or exp.status != "done" or not exp.zip_path:
+        raise HTTPException(404, "export not ready")
+    version = db.get(DatasetVersion, exp.version_id)
+    return FileResponse(exp.zip_path, media_type="application/zip",
+                        filename=f"dataset-v{version.version}-{exp.format}.zip")
+
+
+class ReviewOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    version_id: int
+    row_index: int
+    payload: dict
+    label_column: str
+    proposed_label: str | None
+    confidence: float | None
+    status: str
+    final_label: str | None
+
+
+class ReviewDecision(BaseModel):
+    action: str = Field(pattern="^(accept|correct|reject|reset)$")
+    label: str | None = Field(default=None, max_length=200)
+
+
+@router.get("/versions/{version_id}/reviews")
+def list_reviews(version_id: int, status: str = "pending", offset: int = 0, limit: int = 50,
+                 db: Session = Depends(get_db)) -> dict:
+    from .jobs import label_config
+    from .models import ReviewItem
+
+    version = _version(db, version_id)
+    base = select(ReviewItem).where(ReviewItem.version_id == version_id)
+    counts = dict(db.execute(select(ReviewItem.status, func.count()).where(ReviewItem.version_id == version_id)
+                             .group_by(ReviewItem.status)).all())
+    if status != "all":
+        base = base.where(ReviewItem.status == status)
+    items = db.scalars(base.order_by(ReviewItem.confidence.asc().nulls_first(), ReviewItem.row_index)
+                       .offset(max(offset, 0)).limit(min(max(limit, 1), 200))).all()
+    cfg = label_config(version.graph_json or {}) or (version.graph_json or {}).get("labels") or {}
+    return {"counts": counts, "labels": cfg.get("labels", []),
+            "items": [ReviewOut.model_validate(i).model_dump() for i in items]}
+
+
+@router.post("/reviews/{review_id}", response_model=ReviewOut)
+def decide_review(review_id: int, body: ReviewDecision, db: Session = Depends(get_db)):
+    from .models import ReviewItem
+
+    item = db.get(ReviewItem, review_id)
+    if item is None:
+        raise HTTPException(404, "review item not found")
+    if body.action == "accept":
+        if not item.proposed_label:
+            raise HTTPException(422, "nothing proposed to accept; pick a label")
+        item.status, item.final_label = "accepted", item.proposed_label
+    elif body.action == "correct":
+        if not body.label:
+            raise HTTPException(422, "a label is required")
+        item.status, item.final_label = "corrected", body.label
+    elif body.action == "reject":
+        item.status, item.final_label = "rejected", None
+    else:
+        item.status, item.final_label = "pending", None
+    item.reviewed_at = datetime.now().astimezone() if item.status != "pending" else None
+    db.commit()
+    return item
+
+
+@router.post("/versions/{version_id}/apply-reviews", status_code=202)
+async def apply_reviews(version_id: int, db: Session = Depends(get_db)) -> dict:
+    from .models import ReviewItem
+
+    version = _version(db, version_id)
+    _done_path(version)
+    decided = db.scalar(select(func.count()).select_from(ReviewItem)
+                        .where(ReviewItem.version_id == version_id, ReviewItem.status != "pending")) or 0
+    if not decided:
+        raise HTTPException(409, "no reviewed items to apply")
+    await jobqueue.enqueue("apply_reviews", version_id)
+    return {"queued": True, "reviews": decided}

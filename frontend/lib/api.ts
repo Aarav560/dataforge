@@ -123,10 +123,27 @@ export interface Pipeline {
   updated_at: string;
 }
 
+export interface ColumnStats {
+  name: string;
+  type: string;
+  kind: "numeric" | "categorical" | "text" | "nested";
+  nulls: number;
+  distinct?: number;
+  min?: number;
+  max?: number;
+  mean?: number;
+  std?: number;
+  avg_length?: number;
+  top?: { value: string; count: number }[];
+  histogram?: { from: number; to: number; count: number }[];
+}
+
 export interface Version {
   id: number;
   project_id: number;
   pipeline_id: number | null;
+  parent_version_id: number | null;
+  stats: { rows?: number; columns?: ColumnStats[] };
   version: number;
   status: "running" | "done" | "error";
   columns: { name: string; type: string }[];
@@ -198,6 +215,65 @@ export interface LiveEvent {
   [key: string]: unknown;
 }
 
+export interface Diff {
+  base: { id: number; version: number };
+  target: { id: number; version: number };
+  rows: { before: number; after: number; delta: number; added?: number; removed?: number; unchanged?: number };
+  columns: {
+    added: { name: string; type: string }[];
+    removed: { name: string; type: string }[];
+    type_changed: { name: string; before: string; after: string }[];
+  };
+  compared_columns: string[];
+  sample_added?: Record<string, unknown>[];
+  sample_removed?: Record<string, unknown>[];
+}
+
+export interface ExportCheck {
+  allowed: boolean;
+  blockers: string[];
+  warnings: string[];
+  needs_acknowledgement: boolean;
+}
+
+export interface ExportJob {
+  id: number;
+  version_id: number;
+  format: string;
+  status: "queued" | "running" | "done" | "error";
+  push_repo: string | null;
+  private: boolean;
+  files: number;
+  hub_url: string | null;
+  warnings: string[];
+  error: string | null;
+  created_at: string;
+}
+
+export interface ReviewItem {
+  id: number;
+  version_id: number;
+  row_index: number;
+  payload: { text?: string; asset_id?: number; path?: string };
+  label_column: string;
+  proposed_label: string | null;
+  confidence: number | null;
+  status: "pending" | "accepted" | "corrected" | "rejected";
+  final_label: string | null;
+}
+
+export interface ReviewQueue {
+  counts: Record<string, number>;
+  labels: string[];
+  items: ReviewItem[];
+}
+
+export interface IndexStatus {
+  entries: { source: string; kind: string; count: number; synced_at: string | null }[];
+  cached_queries: number;
+  embedding_model: string;
+}
+
 export interface Health {
   planner: "claude" | "heuristic";
   queue: string;
@@ -263,6 +339,23 @@ export const api = {
   assetFiles: (assetId: number) => call<AssetFile[]>(`/assets/${assetId}/files`),
   assetPreview: (assetId: number, path: string) =>
     call<Preview>(`/assets/${assetId}/preview?path=${encodeURIComponent(path)}`),
+  diff: (versionId: number, against?: number) =>
+    call<Diff>(`/versions/${versionId}/diff${against ? `?against=${against}` : ""}`),
+  regenerateCard: (versionId: number) => call<Version>(`/versions/${versionId}/card`, { method: "POST" }),
+  exportFormats: () => call<Record<string, string>>("/export-formats"),
+  exportCheck: (versionId: number, format: string, push: boolean, acknowledge: boolean) =>
+    call<ExportCheck>(`/versions/${versionId}/export-check?format=${format}&push=${push}&acknowledge=${acknowledge}`),
+  startExport: (versionId: number, body: { format: string; push_to_hub?: boolean; repo_id?: string; private?: boolean; acknowledge_unknown_licenses?: boolean }) =>
+    call<ExportJob>(`/versions/${versionId}/exports`, { method: "POST", body: JSON.stringify(body) }),
+  exports: (versionId: number) => call<ExportJob[]>(`/versions/${versionId}/exports`),
+  reviews: (versionId: number, status = "pending", offset = 0, limit = 50) =>
+    call<ReviewQueue>(`/versions/${versionId}/reviews?status=${status}&offset=${offset}&limit=${limit}`),
+  decide: (reviewId: number, action: "accept" | "correct" | "reject" | "reset", label?: string) =>
+    call<ReviewItem>(`/reviews/${reviewId}`, { method: "POST", body: JSON.stringify({ action, label }) }),
+  applyReviews: (versionId: number) =>
+    call<{ queued: boolean; reviews: number }>(`/versions/${versionId}/apply-reviews`, { method: "POST" }),
+  indexStatus: () => call<IndexStatus>("/index"),
+  syncIndex: () => call<{ queued: boolean }>("/index/sync", { method: "POST" }),
   rows: (versionId: number, offset = 0, limit = 50) =>
     call<Rows>(`/versions/${versionId}/rows?offset=${offset}&limit=${limit}`),
 };
@@ -292,4 +385,8 @@ export function wsUrl(projectId: number): string {
   if (base) return `${base.replace(/\/$/, "")}/api/projects/${projectId}/ws`;
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
   return `${proto}://${window.location.hostname}:8000/api/projects/${projectId}/ws`;
+}
+
+export function exportDownloadUrl(exportId: number): string {
+  return `/api/exports/${exportId}/download`;
 }

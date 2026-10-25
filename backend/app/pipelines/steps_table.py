@@ -246,7 +246,7 @@ def split(ctx: Context, p: dict, env: Env) -> Context:
     else:
         allocate(np.arange(n))
     out = t.append_column("split", pa.array(assign.tolist(), pa.string()))
-    counts = {k: int((assign == k).sum()) for k in names}
+    counts = {str(k): int((assign == k).sum()) for k in names}
     env.log(f"split: {counts}")
     return Context(table=out, videos=ctx.videos, files=ctx.files)
 
@@ -326,3 +326,23 @@ def chunk_text(ctx: Context, p: dict, env: Env) -> Context:
                 break
     schema = t.schema.append(pa.field("chunk", pa.int32())) if "chunk" not in t.column_names else t.schema
     return Context(table=pa.Table.from_pylist(out, schema=schema), videos=ctx.videos, files=ctx.files)
+
+
+@step(
+    "inline_rows",
+    "Inline rows",
+    "source",
+    "Paste a small CSV table (header row first), e.g. seed examples or a label map.",
+    {"csv": Param("str", required=True, help="CSV text with a header row")},
+    source=True,
+)
+def inline_rows(ctx: Context, p: dict, env: Env) -> Context:
+    import pyarrow.csv as pacsv
+
+    if len(p["csv"]) > 1_000_000:
+        raise PipelineError("inline CSV is limited to 1 MB; download a file instead")
+    try:
+        t = pacsv.read_csv(pa.py_buffer(p["csv"].strip().encode()))
+    except pa.ArrowInvalid as exc:
+        raise PipelineError(f"invalid CSV: {exc}") from exc
+    return Context(table=t)

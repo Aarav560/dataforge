@@ -6,16 +6,18 @@ from .base import Connector, LinkRef, RawResult, extract_links
 from .github import GitHubConnector
 from .huggingface import HuggingFaceConnector
 from .kaggle import KaggleConnector
+from .openml import OpenMLConnector
 from .semanticscholar import SemanticScholarConnector
 from .youtube import YouTubeConnector
 
-SOURCES = ("huggingface", "kaggle", "github", "youtube", "arxiv", "semanticscholar")
+SOURCES = ("huggingface", "kaggle", "openml", "github", "youtube", "arxiv", "semanticscholar")
 
 
 def build_connectors(client: httpx.AsyncClient, settings: Settings) -> dict[str, Connector]:
     return {
         "huggingface": HuggingFaceConnector(client, settings.hf_token),
         "kaggle": KaggleConnector(client, settings.kaggle_username, settings.kaggle_key),
+        "openml": OpenMLConnector(client),
         "github": GitHubConnector(client, settings.github_token),
         "youtube": YouTubeConnector(client, settings.youtube_api_key),
         "arxiv": ArxivConnector(client),

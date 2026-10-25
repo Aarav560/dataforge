@@ -155,3 +155,17 @@ def test_stats_diff_and_card(tmp_path):
     assert card.startswith("---\npretty_name: \"Tetris AI\"\nlicense: other")
     assert "- Commercial use: **no**" in card and "Share-alike terms apply from: u/tetris" in card
     assert "Class imbalance in `label`" in card and "local use only" in card and "email: 2" in card
+
+
+def test_stats_kinds_and_imbalance_scope(tmp_path):
+    path = tmp_path / "s.parquet"
+    pq.write_table(pa.table({
+        "text": [f"row {i}" for i in range(40)],
+        "label": ["a"] * 35 + ["b"] * 5,
+        "split": ["train"] * 32 + ["val"] * 4 + ["test"] * 4,
+        "needs_review": [True] * 2 + [False] * 38,
+    }), path)
+    stats = compute_stats(path)
+    kinds = {c["name"]: c["kind"] for c in stats["columns"]}
+    assert kinds["text"] == "text" and kinds["label"] == "categorical"
+    assert [i["column"] for i in class_imbalance(stats)] == ["label"]

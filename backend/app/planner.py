@@ -20,7 +20,7 @@ APPROACHES = ("supervised", "reinforcement_learning", "imitation_learning", "sel
 
 # Which connectors serve each need kind.
 KIND_SOURCES: dict[str, tuple[str, ...]] = {
-    "dataset": ("huggingface", "kaggle", "github"),
+    "dataset": ("huggingface", "kaggle", "openml", "github"),
     "model": ("huggingface", "github"),
     "environment": ("github",),
     "code": ("github",),

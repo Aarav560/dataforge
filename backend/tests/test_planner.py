@@ -10,7 +10,7 @@ def test_heuristic_tetris_plan():
     kinds = [n.kind for n in plan.needs]
     assert kinds == ["dataset", "model", "environment", "video", "paper", "code"]
     assert all("tetris" in q.lower() for n in plan.needs for q in n.queries)
-    assert plan.needs[0].source_queries().keys() == {"huggingface", "kaggle", "github"}
+    assert plan.needs[0].source_queries().keys() == {"huggingface", "kaggle", "openml", "github"}
 
 
 def test_heuristic_supervised():

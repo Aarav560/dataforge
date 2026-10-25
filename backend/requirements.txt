@@ -14,3 +14,5 @@ pyarrow==26.0.0
 scenedetect==0.7.2
 duckdb==2.0.0
 pillow==13.0.0
+fastembed==0.9.1
+huggingface_hub==1.33.0

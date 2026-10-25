@@ -167,6 +167,11 @@ export function DatasetsPanel() {
                       Preview
                     </button>
                   )}
+                  {v.status === "done" && (
+                    <button className="btn" onClick={() => ws.setActiveVersion(v.id)} title="Select in the Dataset Workspace">
+                      Inspect
+                    </button>
+                  )}
                 </div>
                 {v.error && <div className="text-red-400 break-words">{v.error}</div>}
               </li>

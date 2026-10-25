@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -125,3 +125,73 @@ class DatasetVersion(Base):
     export_paths: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class HubEntry(Base):
+    """Pre-indexed metadata from the big hubs, synced in the background."""
+
+    __tablename__ = "hub_index"
+    __table_args__ = (UniqueConstraint("source", "kind", "external_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    external_id: Mapped[str] = mapped_column(String(512))
+    # Serialized RawResult, so an index hit becomes a result without an API call.
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    embedding: Mapped[list] = mapped_column(JSON, default=list)
+    embedding_model: Mapped[str] = mapped_column(String(64), default="")
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class QueryCache(Base):
+    """Semantic cache: near-duplicate searches reuse earlier results."""
+
+    __tablename__ = "query_cache"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    query: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list] = mapped_column(JSON, default=list)
+    embedding_model: Mapped[str] = mapped_column(String(64), default="")
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+class Export(Base):
+    __tablename__ = "exports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("dataset_versions.id", ondelete="CASCADE"), index=True)
+    format: Mapped[str] = mapped_column(String(32))
+    # queued | running | done | error
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    push_repo: Mapped[str | None] = mapped_column(String(200))
+    private: Mapped[bool] = mapped_column(default=True)
+    zip_path: Mapped[str | None] = mapped_column(Text)
+    files: Mapped[int] = mapped_column(default=0)
+    hub_url: Mapped[str | None] = mapped_column(Text)
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ReviewItem(Base):
+    """A row an auto-labeler wasn't sure about, waiting for a human."""
+
+    __tablename__ = "review_items"
+    __table_args__ = (UniqueConstraint("version_id", "row_index"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("dataset_versions.id", ondelete="CASCADE"), index=True)
+    row_index: Mapped[int]
+    # What the reviewer sees: text snippet or {asset_id, path} for images.
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    label_column: Mapped[str] = mapped_column(String(64), default="label")
+    proposed_label: Mapped[str | None] = mapped_column(String(200))
+    confidence: Mapped[float | None] = mapped_column(Float)
+    # pending | accepted | corrected | rejected
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    final_label: Mapped[str | None] = mapped_column(String(200))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -48,6 +48,10 @@ interface Workspace {
   setFocused: (id: number | null) => void;
   error: string | null;
   setError: (msg: string | null) => void;
+  /** Bumps when an export finishes, so export lists refetch. */
+  exportTick: number;
+  activeVersion: number | null;
+  setActiveVersion: (id: number | null) => void;
   refresh: (what?: ("project" | "results" | "assets" | "versions" | "pipelines" | "stats")[]) => Promise<void>;
   openProject: (id: number | null) => void;
 }
@@ -71,7 +75,9 @@ function describe(e: LiveEvent): Omit<FeedLine, "id" | "ts"> | null {
     case "hits":
       return {
         source: s("source"),
-        text: `${s("count")} hits${e.query ? ` for "${s("query")}"` : ""} · ${s("new")} new${e.ms ? ` · ${s("ms")}ms` : ""}`,
+        text: `${s("count")} hits${e.query ? ` for "${s("query")}"` : ""} · ${s("new")} new${e.ms ? ` · ${s("ms")}ms` : ""}${
+          e.origin && e.origin !== "live" ? ` · from ${s("origin")}` : ""
+        }`,
         tone: Number(e.count) > 0 ? "ok" : "info",
       };
     case "source_error":
@@ -92,6 +98,12 @@ function describe(e: LiveEvent): Omit<FeedLine, "id" | "ts"> | null {
       return { source: "pipeline", text: `version ready: ${Number(e.rows).toLocaleString()} rows`, tone: "ok" };
     case "version_error":
       return { source: "pipeline", text: `run failed: ${s("error")}`, tone: "error" };
+    case "export_started":
+      return { source: "export", text: `exporting ${s("format")}…`, tone: "info" };
+    case "export_done":
+      return { source: "export", text: `${s("format")} export ready (${s("files")} files)${e.hub_url ? ` · pushed to ${s("hub_url")}` : ""}`, tone: "ok" };
+    case "export_error":
+      return { source: "export", text: `export failed: ${s("error")}`, tone: "error" };
     default:
       return null;
   }
@@ -116,6 +128,8 @@ export function WorkspaceProvider({ projectId, onProjectChange, children }: {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [focused, setFocused] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [exportTick, setExportTick] = useState(0);
+  const [activeVersion, setActiveVersion] = useState<number | null>(null);
 
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
@@ -156,6 +170,7 @@ export function WorkspaceProvider({ projectId, onProjectChange, children }: {
     setSourceHits({});
     setSelected(new Set());
     setFocused(null);
+    setActiveVersion(null);
     setFiltersState({ needId: null, license: "", source: "" });
     refresh();
   }, [projectId, refresh]);
@@ -215,6 +230,10 @@ export function WorkspaceProvider({ projectId, onProjectChange, children }: {
         case "version_error":
           schedule("versions", "stats");
           break;
+        case "export_done":
+        case "export_error":
+          setExportTick((t) => t + 1);
+          break;
       }
     },
     [schedule],
@@ -247,12 +266,12 @@ export function WorkspaceProvider({ projectId, onProjectChange, children }: {
           return n;
         }),
       clearSelected: () => setSelected(new Set()),
-      focused, setFocused, error, setError,
+      focused, setFocused, error, setError, exportTick, activeVersion, setActiveVersion,
       refresh: (what) => refresh(what ?? ALL),
       openProject: onProjectChange,
     }),
     [project, results, assets, versions, pipelines, stats, feed, sourceHits, freshResults, stepStates, connected,
-     filters, selected, focused, error, refresh, onProjectChange],
+     filters, selected, focused, error, exportTick, activeVersion, refresh, onProjectChange],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
