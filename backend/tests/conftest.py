@@ -3,7 +3,8 @@ import tempfile
 from pathlib import Path
 
 _tmp = Path(tempfile.mkdtemp(prefix="dataforge-test-"))
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmp / 'test.db'}"
+# TEST_DATABASE_URL runs the suite against another database, e.g. Postgres.
+os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{_tmp / 'test.db'}"
 os.environ["DATA_DIR"] = str(_tmp / "data")
 os.environ["REDIS_URL"] = ""
 os.environ["ANTHROPIC_API_KEY"] = ""
