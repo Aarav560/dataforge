@@ -10,11 +10,58 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    password_hash: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # Only a hash of the token is stored; the token itself lives in the cookie.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    members: Mapped[list["TeamMember"]] = relationship(back_populates="team", cascade="all, delete-orphan")
+
+
+class TeamMember(Base):
+    __tablename__ = "team_members"
+    __table_args__ = (UniqueConstraint("team_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # owner | editor | viewer
+    role: Mapped[str] = mapped_column(String(16), default="editor")
+
+    team: Mapped[Team] = relationship(back_populates="members")
+    user: Mapped[User] = relationship()
+
+
 class Project(Base):
     __tablename__ = "projects"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[str | None] = mapped_column(String(64))
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    # Shared projects belong to a team; members get their team role on it.
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"), index=True)
     goal: Mapped[str] = mapped_column(Text)
     approach: Mapped[str | None] = mapped_column(String(64))
     plan_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -195,3 +242,21 @@ class ReviewItem(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     final_label: Mapped[str | None] = mapped_column(String(200))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BaselineRun(Base):
+    """A quick model trained on a dataset version to check it carries signal."""
+
+    __tablename__ = "baseline_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("dataset_versions.id", ondelete="CASCADE"), index=True)
+    target: Mapped[str] = mapped_column(String(200))
+    exclude: Mapped[list | None] = mapped_column(JSON)
+    # queued | running | done | error
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    model_path: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

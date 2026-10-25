@@ -13,6 +13,8 @@ export interface Need {
 
 export interface ProjectSummary {
   id: number;
+  owner_id?: number | null;
+  team_id?: number | null;
   goal: string;
   approach: string | null;
   planner: string;
@@ -274,17 +276,76 @@ export interface IndexStatus {
   embedding_model: string;
 }
 
+export interface Me {
+  id: number;
+  email: string;
+  name: string;
+  auth_enabled: boolean;
+}
+
+export interface Team {
+  id: number;
+  name: string;
+  role: "owner" | "editor" | "viewer" | null;
+  members: { user_id: number; email: string; name: string; role: "owner" | "editor" | "viewer" }[];
+}
+
+export interface SourceInfo {
+  name: string;
+  origin: string;
+  kinds: string[];
+  description?: string;
+  error: string | null;
+}
+
+export interface BaselineOptions {
+  targets: string[];
+  target: string | null;
+  columns: string[];
+  suggested_exclude: string[];
+}
+
+export interface BaselineRun {
+  id: number;
+  version_id: number;
+  target: string;
+  exclude: string[] | null;
+  status: "queued" | "running" | "done" | "error";
+  result: {
+    task?: "classification" | "regression";
+    model?: string;
+    rows?: { train: number; test: number };
+    split?: string;
+    features?: { column: string; as: string }[];
+    excluded?: string[];
+    metrics?: Record<string, number | string>;
+    per_class?: { label: string; precision: number; recall: number; f1: number; support: number }[];
+    confusion?: { labels: string[]; matrix: number[][] };
+    seconds?: number;
+  };
+  error: string | null;
+  created_at: string;
+}
+
 export interface Health {
+  auth: boolean;
   planner: "claude" | "heuristic";
   queue: string;
   kaggle_downloads: boolean;
 }
 
+export class UnauthorizedError extends Error {}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
+    credentials: "same-origin",
     headers: { "content-type": "application/json", ...init?.headers },
   });
+  if (res.status === 401 && !path.startsWith("/auth/login")) {
+    window.dispatchEvent(new Event("dataforge:unauthorized"));
+    throw new UnauthorizedError("sign in required");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     const detail = body?.detail;
@@ -297,7 +358,8 @@ export const api = {
   health: () => call<Health>("/health"),
   listProjects: () => call<ProjectSummary[]>("/projects"),
   getProject: (id: number) => call<Project>(`/projects/${id}`),
-  createProject: (goal: string) => call<Project>("/projects", { method: "POST", body: JSON.stringify({ goal }) }),
+  createProject: (goal: string, teamId?: number | null) =>
+    call<Project>("/projects", { method: "POST", body: JSON.stringify({ goal, team_id: teamId ?? null }) }),
   deleteProject: (id: number) => call<void>(`/projects/${id}`, { method: "DELETE" }),
   addNeed: (projectId: number, need: { description: string; kind: Kind; queries: string[] }) =>
     call<Need>(`/projects/${projectId}/needs`, { method: "POST", body: JSON.stringify(need) }),
@@ -354,6 +416,27 @@ export const api = {
     call<ReviewItem>(`/reviews/${reviewId}`, { method: "POST", body: JSON.stringify({ action, label }) }),
   applyReviews: (versionId: number) =>
     call<{ queued: boolean; reviews: number }>(`/versions/${versionId}/apply-reviews`, { method: "POST" }),
+  me: () => call<Me>("/auth/me"),
+  login: (email: string, password: string) =>
+    call<Me>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+  signup: (email: string, password: string, name: string) =>
+    call<Me>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password, name }) }),
+  logout: () => call<void>("/auth/logout", { method: "POST" }),
+  teams: () => call<Team[]>("/teams"),
+  createTeam: (name: string) => call<Team>("/teams", { method: "POST", body: JSON.stringify({ name }) }),
+  addMember: (teamId: number, email: string, role: string) =>
+    call<Team>(`/teams/${teamId}/members`, { method: "POST", body: JSON.stringify({ email, role }) }),
+  changeRole: (teamId: number, userId: number, role: string) =>
+    call<Team>(`/teams/${teamId}/members/${userId}`, { method: "PATCH", body: JSON.stringify({ role }) }),
+  removeMember: (teamId: number, userId: number) => call<void>(`/teams/${teamId}/members/${userId}`, { method: "DELETE" }),
+  shareProject: (projectId: number, teamId: number | null) =>
+    call<{ id: number; team_id: number | null }>(`/projects/${projectId}/team`, { method: "PUT", body: JSON.stringify({ team_id: teamId }) }),
+  sources: () => call<SourceInfo[]>("/sources"),
+  baselineOptions: (versionId: number, target?: string) =>
+    call<BaselineOptions>(`/versions/${versionId}/baseline-options${target ? `?target=${encodeURIComponent(target)}` : ""}`),
+  startBaseline: (versionId: number, target: string, exclude: string[]) =>
+    call<BaselineRun>(`/versions/${versionId}/baselines`, { method: "POST", body: JSON.stringify({ target, exclude }) }),
+  baselines: (versionId: number) => call<BaselineRun[]>(`/versions/${versionId}/baselines`),
   indexStatus: () => call<IndexStatus>("/index"),
   syncIndex: () => call<{ queued: boolean }>("/index/sync", { method: "POST" }),
   rows: (versionId: number, offset = 0, limit = 50) =>
@@ -385,6 +468,10 @@ export function wsUrl(projectId: number): string {
   if (base) return `${base.replace(/\/$/, "")}/api/projects/${projectId}/ws`;
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
   return `${proto}://${window.location.hostname}:8000/api/projects/${projectId}/ws`;
+}
+
+export function modelDownloadUrl(runId: number): string {
+  return `/api/baselines/${runId}/model`;
 }
 
 export function exportDownloadUrl(exportId: number): string {

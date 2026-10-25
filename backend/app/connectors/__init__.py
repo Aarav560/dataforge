@@ -14,7 +14,10 @@ SOURCES = ("huggingface", "kaggle", "openml", "github", "youtube", "arxiv", "sem
 
 
 def build_connectors(client: httpx.AsyncClient, settings: Settings) -> dict[str, Connector]:
+    from .. import plugins
+
     return {
+        **plugins.connectors(client, settings),
         "huggingface": HuggingFaceConnector(client, settings.hf_token),
         "kaggle": KaggleConnector(client, settings.kaggle_username, settings.kaggle_key),
         "openml": OpenMLConnector(client),

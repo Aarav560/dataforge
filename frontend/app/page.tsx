@@ -1,13 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { AuthScreen } from "@/components/AuthScreen";
 import { CommandBar } from "@/components/CommandBar";
 import { StatsHUD } from "@/components/StatsHUD";
 import { useWorkspaceLayout, WorkspaceLayout } from "@/components/Workspace";
-import { api, type Health, type ProjectSummary } from "@/lib/api";
+import { api, UnauthorizedError, type Health, type Me, type ProjectSummary, type Team } from "@/lib/api";
 import { useWorkspace, WorkspaceProvider } from "@/lib/workspace";
 
 export default function Home() {
+  const [me, setMe] = useState<Me | null | undefined>(undefined);
+
+  useEffect(() => {
+    api.me().then(setMe).catch((e) => setMe(e instanceof UnauthorizedError ? null : undefined));
+    const onUnauthorized = () => setMe(null);
+    window.addEventListener("dataforge:unauthorized", onUnauthorized);
+    return () => window.removeEventListener("dataforge:unauthorized", onUnauthorized);
+  }, []);
+
+  if (me === null) return <AuthScreen onSignedIn={setMe} />;
+  if (me === undefined) return <main className="flex min-h-dvh items-center justify-center text-sm muted">Connecting…</main>;
+  return <SignedIn me={me} onSignOut={() => setMe(null)} />;
+}
+
+function SignedIn({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
   const [projectId, setProjectId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -25,30 +41,38 @@ export default function Home() {
 
   return (
     <WorkspaceProvider projectId={projectId} onProjectChange={change}>
-      <Shell />
+      <Shell me={me} onSignOut={onSignOut} />
     </WorkspaceProvider>
   );
 }
 
-function Shell() {
+function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
   const ws = useWorkspace();
   const layout = useWorkspaceLayout();
   const [health, setHealth] = useState<Health | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [teamId, setTeamId] = useState<number | null>(null);
   const [planning, setPlanning] = useState(false);
   const [goal, setGoal] = useState("");
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => ws.setError("Backend unreachable. Is it running on :8000?"));
     api.listProjects().then(setProjects).catch(() => {});
+    api.teams().then(setTeams).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const signOut = async () => {
+    await api.logout().catch(() => {});
+    onSignOut();
+  };
 
   const plan = async (text: string) => {
     setPlanning(true);
     ws.setError(null);
     try {
-      const p = await api.createProject(text);
+      const p = await api.createProject(text, teamId);
       setProjects((ps) => [p, ...ps]);
       ws.openProject(p.id);
     } catch (e) {
@@ -80,6 +104,12 @@ function Shell() {
         {health && (
           <span className="hidden text-[11px] muted mono lg:inline">
             planner:{health.planner} · queue:{health.queue}
+          </span>
+        )}
+        {me.auth_enabled && (
+          <span className="flex items-center gap-2 text-[11px]">
+            <span className="mono muted" title={me.email}>{me.name || me.email}</span>
+            <button className="btn" onClick={signOut}>Sign out</button>
           </span>
         )}
       </header>
@@ -120,9 +150,19 @@ function Shell() {
               disabled={planning}
               autoFocus
             />
-            <button type="submit" className="btn btn-primary self-start" disabled={planning || !goal.trim()}>
-              {planning ? "Planning…" : "Plan"}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="submit" className="btn btn-primary" disabled={planning || !goal.trim()}>
+                {planning ? "Planning…" : "Plan"}
+              </button>
+              {teams.filter((t) => t.role !== "viewer").length > 0 && (
+                <select className="input" value={teamId ?? ""} onChange={(e) => setTeamId(e.target.value ? Number(e.target.value) : null)}>
+                  <option value="">private project</option>
+                  {teams.filter((t) => t.role !== "viewer").map((t) => (
+                    <option key={t.id} value={t.id}>share with {t.name}</option>
+                  ))}
+                </select>
+              )}
+            </div>
             <p className="text-[11px] muted">Tip: press Ctrl+K anywhere for the command bar.</p>
           </form>
         </section>

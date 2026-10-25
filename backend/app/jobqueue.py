@@ -15,6 +15,7 @@ _JOBS = {
     "sync_index": jobs.sync_index,
     "run_export": jobs.run_export,
     "apply_reviews": jobs.apply_reviews,
+    "train_baseline": jobs.train_baseline,
 }
 _pool = None
 _background: set[asyncio.Task] = set()

@@ -235,9 +235,9 @@ Dense, terminal-meets-mission-control layout. Dark theme, neon accents, monospac
 - [x] Auto-labeling + human review queue
 
 ### Phase 5 — Power features
-- [ ] Shared/team projects
-- [ ] Plugin system for custom source connectors
-- [ ] "Train a baseline" button (quick model on the built dataset)
+- [x] Shared/team projects
+- [x] Plugin system for custom source connectors
+- [x] "Train a baseline" button (quick model on the built dataset)
 
 ---
 

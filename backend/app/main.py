@@ -9,9 +9,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from . import jobqueue
+from .auth import accessible_project_ids, current_user, project_role, read, require_project, write
+from .routes_auth import require_team_role
+from .routes_auth import router as auth_router
 from .config import get_settings
 from .db import SessionLocal, get_db, init_db
-from .models import Asset, DataNeed, DatasetVersion, Project, SearchResult
+from .models import Asset, DataNeed, DatasetVersion, Project, SearchResult, User
 from .planner import make_plan
 from .routes_datasets import router as datasets_router
 from .routes_live import router as live_router
@@ -48,6 +51,9 @@ def _fail_interrupted_jobs() -> None:
 async def lifespan(app: FastAPI):
     init_db()
     settings = get_settings()
+    from . import plugins
+
+    plugins.load(settings)
     scheduler = None
     if not settings.redis_url:
         _fail_interrupted_jobs()
@@ -68,6 +74,7 @@ async def queue_unavailable(request: Request, exc: jobqueue.QueueUnavailable):
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
+app.include_router(auth_router)
 app.include_router(datasets_router)
 app.include_router(live_router)
 app.add_middleware(
@@ -75,6 +82,7 @@ app.add_middleware(
     allow_origins=get_settings().cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 
@@ -116,10 +124,27 @@ def index_status() -> dict:
     return hubindex.stats()
 
 
-@app.post("/api/index/sync", status_code=202)
+@app.post("/api/index/sync", status_code=202, dependencies=[Depends(current_user)])
 async def index_sync() -> dict:
     await jobqueue.enqueue("sync_index")
     return {"queued": True}
+
+
+@app.get("/api/sources")
+def list_sources() -> list[dict]:
+    from . import plugins
+    from .connectors import SOURCES
+    from .planner import KIND_SOURCES
+
+    builtin = [
+        {"name": s, "origin": "built-in", "kinds": sorted(k for k, srcs in KIND_SOURCES.items() if s in srcs), "error": None}
+        for s in SOURCES
+    ]
+    extra = [
+        {"name": p.name, "origin": p.origin, "kinds": p.kinds, "description": p.description, "error": p.error}
+        for p in plugins.load().values()
+    ]
+    return builtin + extra
 
 
 @app.get("/api/health")
@@ -131,13 +156,17 @@ def health() -> dict:
         "queue": "redis" if settings.redis_url else "in-process",
         "kaggle_downloads": bool(settings.kaggle_username and settings.kaggle_key),
         "youtube": "data-api" if settings.youtube_api_key else "yt-dlp",
+        "auth": settings.auth_enabled,
     }
 
 
 @app.post("/api/projects", response_model=ProjectOut, status_code=201)
-async def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
+async def create_project(body: ProjectCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if body.team_id is not None:
+        require_team_role(db, user, body.team_id, "editor")
     plan = await make_plan(body.goal.strip(), get_settings())
-    project = Project(goal=body.goal.strip(), approach=plan.approach, plan_json=plan.to_json(), planner=plan.planner)
+    project = Project(goal=body.goal.strip(), approach=plan.approach, plan_json=plan.to_json(), planner=plan.planner,
+                      owner_id=user.id, team_id=body.team_id)
     for n in plan.needs:
         project.needs.append(
             DataNeed(description=n.description, kind=n.kind, approach=plan.approach, queries=n.source_queries())
@@ -148,22 +177,27 @@ async def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/api/projects", response_model=list[ProjectSummary])
-def list_projects(db: Session = Depends(get_db)):
-    return db.scalars(select(Project).order_by(Project.created_at.desc()).limit(100)).all()
+def list_projects(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    return db.scalars(
+        select(Project).where(Project.id.in_(accessible_project_ids(db, user))).order_by(Project.created_at.desc()).limit(200)
+    ).all()
 
 
-@app.get("/api/projects/{project_id}", response_model=ProjectOut)
+@app.get("/api/projects/{project_id}", response_model=ProjectOut, dependencies=[read("project")])
 def get_project(project_id: int, db: Session = Depends(get_db)):
     return _project_out(db, _project_or_404(db, project_id))
 
 
 @app.delete("/api/projects/{project_id}", status_code=204)
-def delete_project(project_id: int, db: Session = Depends(get_db)):
-    db.delete(_project_or_404(db, project_id))
+def delete_project(project_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    project = require_project(db, user, project_id, write=True)
+    if project_role(db, user, project) != "owner":
+        raise HTTPException(403, "only the project owner or a team owner can delete it")
+    db.delete(project)
     db.commit()
 
 
-@app.post("/api/projects/{project_id}/needs", response_model=NeedOut, status_code=201)
+@app.post("/api/projects/{project_id}/needs", response_model=NeedOut, status_code=201, dependencies=[write("project")])
 def add_need(project_id: int, body: NeedIn, db: Session = Depends(get_db)):
     project = _project_or_404(db, project_id)
     need = DataNeed(
@@ -178,7 +212,7 @@ def add_need(project_id: int, body: NeedIn, db: Session = Depends(get_db)):
     return _need_out(db, need)
 
 
-@app.patch("/api/needs/{need_id}", response_model=NeedOut)
+@app.patch("/api/needs/{need_id}", response_model=NeedOut, dependencies=[write("need")])
 def update_need(need_id: int, body: NeedPatch, db: Session = Depends(get_db)):
     need = _need_or_404(db, need_id)
     if need.status == "searching":
@@ -194,13 +228,13 @@ def update_need(need_id: int, body: NeedPatch, db: Session = Depends(get_db)):
     return _need_out(db, need)
 
 
-@app.delete("/api/needs/{need_id}", status_code=204)
+@app.delete("/api/needs/{need_id}", status_code=204, dependencies=[write("need")])
 def delete_need(need_id: int, db: Session = Depends(get_db)):
     db.delete(_need_or_404(db, need_id))
     db.commit()
 
 
-@app.post("/api/projects/{project_id}/search", response_model=ProjectOut, status_code=202)
+@app.post("/api/projects/{project_id}/search", response_model=ProjectOut, status_code=202, dependencies=[write("project")])
 async def start_search(project_id: int, body: SearchRequest | None = None, db: Session = Depends(get_db)):
     project = _project_or_404(db, project_id)
     wanted = set(body.need_ids) if body and body.need_ids else None
@@ -220,7 +254,7 @@ async def start_search(project_id: int, body: SearchRequest | None = None, db: S
     return _project_out(db, project)
 
 
-@app.get("/api/projects/{project_id}/results", response_model=list[ResultOut])
+@app.get("/api/projects/{project_id}/results", response_model=list[ResultOut], dependencies=[read("project")])
 def list_results(
     project_id: int,
     need_id: int | None = None,
@@ -256,7 +290,7 @@ def _asset_out(asset: Asset) -> AssetOut:
     )
 
 
-@app.post("/api/projects/{project_id}/downloads", response_model=list[AssetOut], status_code=202)
+@app.post("/api/projects/{project_id}/downloads", response_model=list[AssetOut], status_code=202, dependencies=[write("project")])
 async def start_downloads(project_id: int, body: DownloadRequest, db: Session = Depends(get_db)):
     _project_or_404(db, project_id)
     results = db.scalars(
@@ -289,7 +323,7 @@ async def start_downloads(project_id: int, body: DownloadRequest, db: Session = 
     return [_asset_out(a) for a in assets]
 
 
-@app.get("/api/projects/{project_id}/assets", response_model=list[AssetOut])
+@app.get("/api/projects/{project_id}/assets", response_model=list[AssetOut], dependencies=[read("project")])
 def list_assets(project_id: int, db: Session = Depends(get_db)):
     _project_or_404(db, project_id)
     assets = db.scalars(

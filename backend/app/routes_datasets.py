@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import jobqueue
+from .auth import read, write
 from .config import get_settings
 from .db import get_db
 from .models import DatasetVersion, Pipeline, Project
@@ -109,7 +110,7 @@ def list_templates() -> list[dict]:
     return templates.describe()
 
 
-@router.post("/projects/{project_id}/pipelines", response_model=PipelineOut, status_code=201)
+@router.post("/projects/{project_id}/pipelines", response_model=PipelineOut, status_code=201, dependencies=[write("project")])
 def create_pipeline(project_id: int, body: PipelineCreate, db: Session = Depends(get_db)):
     _project(db, project_id)
     if body.graph is not None:
@@ -129,18 +130,18 @@ def create_pipeline(project_id: int, body: PipelineCreate, db: Session = Depends
     return pipeline
 
 
-@router.get("/projects/{project_id}/pipelines", response_model=list[PipelineOut])
+@router.get("/projects/{project_id}/pipelines", response_model=list[PipelineOut], dependencies=[read("project")])
 def list_pipelines(project_id: int, db: Session = Depends(get_db)):
     _project(db, project_id)
     return db.scalars(select(Pipeline).where(Pipeline.project_id == project_id).order_by(Pipeline.id)).all()
 
 
-@router.get("/pipelines/{pipeline_id}", response_model=PipelineOut)
+@router.get("/pipelines/{pipeline_id}", response_model=PipelineOut, dependencies=[read("pipeline")])
 def get_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
     return _pipeline(db, pipeline_id)
 
 
-@router.put("/pipelines/{pipeline_id}", response_model=PipelineOut)
+@router.put("/pipelines/{pipeline_id}", response_model=PipelineOut, dependencies=[write("pipeline")])
 def update_pipeline(pipeline_id: int, body: PipelineUpdate, db: Session = Depends(get_db)):
     pipeline = _pipeline(db, pipeline_id)
     if body.name is not None:
@@ -151,7 +152,7 @@ def update_pipeline(pipeline_id: int, body: PipelineUpdate, db: Session = Depend
     return pipeline
 
 
-@router.delete("/pipelines/{pipeline_id}", status_code=204)
+@router.delete("/pipelines/{pipeline_id}", status_code=204, dependencies=[write("pipeline")])
 def delete_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
     db.delete(_pipeline(db, pipeline_id))
     db.commit()
@@ -171,14 +172,14 @@ async def start_version(db: Session, project_id: int, graph: dict, pipeline_id: 
     return version
 
 
-@router.post("/pipelines/{pipeline_id}/run", response_model=VersionOut, status_code=202)
+@router.post("/pipelines/{pipeline_id}/run", response_model=VersionOut, status_code=202, dependencies=[write("pipeline")])
 async def run_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
     pipeline = _pipeline(db, pipeline_id)
     graph = _clean_graph(pipeline.graph_json)
     return await start_version(db, pipeline.project_id, graph, pipeline.id)
 
 
-@router.get("/projects/{project_id}/versions", response_model=list[VersionOut])
+@router.get("/projects/{project_id}/versions", response_model=list[VersionOut], dependencies=[read("project")])
 def list_versions(project_id: int, db: Session = Depends(get_db)):
     _project(db, project_id)
     return db.scalars(
@@ -186,7 +187,7 @@ def list_versions(project_id: int, db: Session = Depends(get_db)):
     ).all()
 
 
-@router.get("/versions/{version_id}", response_model=VersionOut)
+@router.get("/versions/{version_id}", response_model=VersionOut, dependencies=[read("version")])
 def get_version(version_id: int, db: Session = Depends(get_db)):
     return _version(db, version_id)
 
@@ -199,7 +200,7 @@ def _jsonable(value):
     return value
 
 
-@router.get("/versions/{version_id}/rows")
+@router.get("/versions/{version_id}/rows", dependencies=[read("version")])
 def version_rows(version_id: int, offset: int = 0, limit: int = 50, db: Session = Depends(get_db)) -> dict:
     version = _version(db, version_id)
     if version.status != "done" or not version.storage_path:
@@ -225,7 +226,7 @@ def version_rows(version_id: int, offset: int = 0, limit: int = 50, db: Session 
     }
 
 
-@router.get("/projects/{project_id}/synthetic")
+@router.get("/projects/{project_id}/synthetic", dependencies=[read("project")])
 async def synthetic_advice(project_id: int, refresh: bool = False, db: Session = Depends(get_db)) -> dict:
     project = _project(db, project_id)
     plan = dict(project.plan_json or {})
@@ -244,7 +245,7 @@ def _done_path(version: DatasetVersion):
     return Path(version.storage_path)
 
 
-@router.get("/versions/{version_id}/diff")
+@router.get("/versions/{version_id}/diff", dependencies=[read("version")])
 def version_diff(version_id: int, against: int | None = None, db: Session = Depends(get_db)) -> dict:
     """Diff against `against`, else the parent version, else the previous version of the project."""
     from .analytics import diff
@@ -279,7 +280,7 @@ def jsonable(value):
     return _jsonable(value) if isinstance(value, (bytes, datetime)) else value
 
 
-@router.post("/versions/{version_id}/card", response_model=VersionOut)
+@router.post("/versions/{version_id}/card", response_model=VersionOut, dependencies=[write("version")])
 async def regenerate_card(version_id: int, db: Session = Depends(get_db)):
     from .cards import build_card
 
@@ -328,13 +329,13 @@ def _export_check(db: Session, version: DatasetVersion, fmt: str, push: bool, ac
     return check(version_sources(db, version.graph_json or {}), fmt, push, ack)
 
 
-@router.get("/versions/{version_id}/export-check")
+@router.get("/versions/{version_id}/export-check", dependencies=[read("version")])
 def export_check(version_id: int, format: str = "parquet", push: bool = False, acknowledge: bool = False,
                  db: Session = Depends(get_db)) -> dict:
     return _export_check(db, _version(db, version_id), format, push, acknowledge)
 
 
-@router.post("/versions/{version_id}/exports", response_model=ExportOut, status_code=202)
+@router.post("/versions/{version_id}/exports", response_model=ExportOut, status_code=202, dependencies=[write("version")])
 async def start_export(version_id: int, body: ExportRequest, db: Session = Depends(get_db)):
     from .exports import FORMATS
     from .models import Export
@@ -361,7 +362,7 @@ async def start_export(version_id: int, body: ExportRequest, db: Session = Depen
     return exp
 
 
-@router.get("/versions/{version_id}/exports", response_model=list[ExportOut])
+@router.get("/versions/{version_id}/exports", response_model=list[ExportOut], dependencies=[read("version")])
 def list_exports(version_id: int, db: Session = Depends(get_db)):
     from .models import Export
 
@@ -369,7 +370,7 @@ def list_exports(version_id: int, db: Session = Depends(get_db)):
     return db.scalars(select(Export).where(Export.version_id == version_id).order_by(Export.id.desc())).all()
 
 
-@router.get("/exports/{export_id}/download")
+@router.get("/exports/{export_id}/download", dependencies=[read("export")])
 def download_export(export_id: int, db: Session = Depends(get_db)):
     from fastapi.responses import FileResponse
 
@@ -402,7 +403,7 @@ class ReviewDecision(BaseModel):
     label: str | None = Field(default=None, max_length=200)
 
 
-@router.get("/versions/{version_id}/reviews")
+@router.get("/versions/{version_id}/reviews", dependencies=[read("version")])
 def list_reviews(version_id: int, status: str = "pending", offset: int = 0, limit: int = 50,
                  db: Session = Depends(get_db)) -> dict:
     from .jobs import label_config
@@ -421,7 +422,7 @@ def list_reviews(version_id: int, status: str = "pending", offset: int = 0, limi
             "items": [ReviewOut.model_validate(i).model_dump() for i in items]}
 
 
-@router.post("/reviews/{review_id}", response_model=ReviewOut)
+@router.post("/reviews/{review_id}", response_model=ReviewOut, dependencies=[write("review")])
 def decide_review(review_id: int, body: ReviewDecision, db: Session = Depends(get_db)):
     from .models import ReviewItem
 
@@ -445,7 +446,7 @@ def decide_review(review_id: int, body: ReviewDecision, db: Session = Depends(ge
     return item
 
 
-@router.post("/versions/{version_id}/apply-reviews", status_code=202)
+@router.post("/versions/{version_id}/apply-reviews", status_code=202, dependencies=[write("version")])
 async def apply_reviews(version_id: int, db: Session = Depends(get_db)) -> dict:
     from .models import ReviewItem
 
@@ -457,3 +458,79 @@ async def apply_reviews(version_id: int, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(409, "no reviewed items to apply")
     await jobqueue.enqueue("apply_reviews", version_id)
     return {"queued": True, "reviews": decided}
+
+
+class BaselineRequest(BaseModel):
+    target: str | None = Field(default=None, max_length=200)
+    # None applies the suggested leakage exclusions.
+    exclude: list[str] | None = Field(default=None, max_length=200)
+
+
+class BaselineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    version_id: int
+    target: str
+    exclude: list | None
+    status: str
+    result: dict
+    error: str | None
+    created_at: datetime
+    finished_at: datetime | None
+
+
+@router.get("/versions/{version_id}/baseline-options", dependencies=[read("version")])
+def baseline_options(version_id: int, target: str | None = None, db: Session = Depends(get_db)) -> dict:
+    from .baseline import SKIP, suggested_exclusions, target_candidates
+
+    version = _version(db, version_id)
+    candidates = target_candidates(version.schema or [])
+    chosen = target or (candidates[0] if candidates else None)
+    # Columns that could be features; bookkeeping columns are never used.
+    columns = [c["name"] for c in version.schema or [] if c["name"] not in SKIP]
+    return {"targets": candidates, "target": chosen, "columns": columns,
+            "suggested_exclude": suggested_exclusions(columns, chosen) if chosen else []}
+
+
+@router.post("/versions/{version_id}/baselines", response_model=BaselineOut, status_code=202, dependencies=[write("version")])
+async def start_baseline(version_id: int, body: BaselineRequest, db: Session = Depends(get_db)):
+    from .baseline import target_candidates
+    from .models import BaselineRun
+
+    version = _version(db, version_id)
+    _done_path(version)
+    candidates = target_candidates(version.schema or [])
+    target = body.target or (candidates[0] if candidates else None)
+    if not target or target not in [c["name"] for c in version.schema or []]:
+        raise HTTPException(422, f"choose a target column; candidates: {candidates}")
+    run_row = BaselineRun(version_id=version.id, target=target, exclude=body.exclude)
+    db.add(run_row)
+    db.commit()
+    try:
+        await jobqueue.enqueue("train_baseline", run_row.id)
+    except jobqueue.QueueUnavailable as exc:
+        run_row.status, run_row.error = "error", str(exc)
+        db.commit()
+        raise
+    return run_row
+
+
+@router.get("/versions/{version_id}/baselines", response_model=list[BaselineOut], dependencies=[read("version")])
+def list_baselines(version_id: int, db: Session = Depends(get_db)):
+    from .models import BaselineRun
+
+    return db.scalars(select(BaselineRun).where(BaselineRun.version_id == version_id).order_by(BaselineRun.id.desc())).all()
+
+
+@router.get("/baselines/{baseline_id}/model", dependencies=[read("baseline")])
+def download_model(baseline_id: int, db: Session = Depends(get_db)):
+    from fastapi.responses import FileResponse
+
+    from .models import BaselineRun
+
+    run_row = db.get(BaselineRun, baseline_id)
+    if run_row is None or run_row.status != "done" or not run_row.model_path:
+        raise HTTPException(404, "model not ready")
+    return FileResponse(run_row.model_path, media_type="application/octet-stream",
+                        filename=f"baseline-{baseline_id}-{run_row.target}.joblib")

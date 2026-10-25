@@ -128,7 +128,7 @@ export function CommandBar({ projects, onPlan, onResetLayout, onShowPanel }: Pro
                 </Command.Group>
               )}
               <Command.Group heading="View">
-                {["plan", "feed", "graph", "results", "canvas", "preview", "licenses", "datasets", "versions", "review"].map((id) => (
+                {["plan", "feed", "graph", "results", "canvas", "preview", "licenses", "datasets", "versions", "review", "team", "sources"].map((id) => (
                   <Item key={id} value={`/show ${id}`} onSelect={() => run(() => onShowPanel(id))}>
                     /show <span className="muted">{id}</span>
                   </Item>

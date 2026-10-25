@@ -9,6 +9,8 @@ os.environ["REDIS_URL"] = ""
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["DATAFORGE_EMBEDDINGS"] = "hashing"
 os.environ["INDEX_AUTO_SYNC"] = "false"
+os.environ["AUTO_MIGRATE"] = "false"
+os.environ["PLUGINS_DIR"] = str(_tmp / "no-plugins")
 
 import pytest  # noqa: E402
 

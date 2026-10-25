@@ -98,6 +98,17 @@ function describe(e: LiveEvent): Omit<FeedLine, "id" | "ts"> | null {
       return { source: "pipeline", text: `version ready: ${Number(e.rows).toLocaleString()} rows`, tone: "ok" };
     case "version_error":
       return { source: "pipeline", text: `run failed: ${s("error")}`, tone: "error" };
+    case "baseline_started":
+      return { source: "baseline", text: `training a baseline for "${s("target")}"…`, tone: "info" };
+    case "baseline_done": {
+      const m = (e.metrics ?? {}) as Record<string, number>;
+      const summary = e.task === "classification"
+        ? `accuracy ${(m.accuracy * 100).toFixed(1)}% vs ${(m.baseline_accuracy * 100).toFixed(1)}% trivial`
+        : `MAE ${m.mae?.toFixed(3)} vs ${m.baseline_mae?.toFixed(3)} trivial, R² ${m.r2?.toFixed(3)}`;
+      return { source: "baseline", text: `baseline for "${s("target")}": ${summary}`, tone: "ok" };
+    }
+    case "baseline_error":
+      return { source: "baseline", text: `baseline failed: ${s("error")}`, tone: "error" };
     case "export_started":
       return { source: "export", text: `exporting ${s("format")}…`, tone: "info" };
     case "export_done":
@@ -232,6 +243,8 @@ export function WorkspaceProvider({ projectId, onProjectChange, children }: {
           break;
         case "export_done":
         case "export_error":
+        case "baseline_done":
+        case "baseline_error":
           setExportTick((t) => t + 1);
           break;
       }

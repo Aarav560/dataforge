@@ -602,3 +602,38 @@ async def run_export(export_id: int, *, settings: Settings | None = None) -> Non
                 exp.status, exp.error = "error", str(exc)
                 db.commit()
         events.publish(project_id, "export_error", export_id=export_id, error=str(exc)[:300])
+
+
+async def train_baseline(run_id: int, *, settings: Settings | None = None) -> None:
+    from . import baseline
+    from .models import BaselineRun
+
+    settings = settings or get_settings()
+    project_id = None
+    try:
+        with SessionLocal() as db:
+            run_row = db.get(BaselineRun, run_id)
+            version = db.get(DatasetVersion, run_row.version_id)
+            project_id, path, target, exclude = version.project_id, Path(version.storage_path), run_row.target, run_row.exclude
+            asset_paths = _project_asset_paths(db, version.project_id)
+            run_row.status = "running"
+            db.commit()
+            model_out = settings.data_dir / "versions" / str(version.id) / "baselines" / f"{run_id}.joblib"
+        events.publish(project_id, "baseline_started", run_id=run_id, target=target)
+        result = await asyncio.to_thread(baseline.train, path, target, asset_paths, model_out, exclude)
+        with SessionLocal() as db:
+            run_row = db.get(BaselineRun, run_id)
+            run_row.status, run_row.result, run_row.model_path = "done", result, str(model_out)
+            run_row.finished_at = datetime.now(timezone.utc)
+            db.commit()
+        events.publish(project_id, "baseline_done", run_id=run_id, target=target, task=result["task"],
+                       metrics=result["metrics"])
+    except Exception as exc:
+        log.warning("baseline %s failed: %s", run_id, exc)
+        with SessionLocal() as db:
+            run_row = db.get(BaselineRun, run_id)
+            if run_row is not None:
+                run_row.status, run_row.error = "error", str(exc)
+                run_row.finished_at = datetime.now(timezone.utc)
+                db.commit()
+        events.publish(project_id, "baseline_error", run_id=run_id, error=str(exc)[:300])

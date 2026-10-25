@@ -10,6 +10,7 @@ Kind = Literal["dataset", "model", "environment", "code", "video", "paper"]
 
 class ProjectCreate(BaseModel):
     goal: str = Field(min_length=3, max_length=2000)
+    team_id: int | None = None
 
 
 class NeedIn(BaseModel):
@@ -57,6 +58,8 @@ class ProjectSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    owner_id: int | None = None
+    team_id: int | None = None
     goal: str
     approach: str | None
     planner: str

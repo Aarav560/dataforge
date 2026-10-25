@@ -8,6 +8,9 @@ import {
   assetFileUrl,
   exportDownloadUrl,
   type ColumnStats,
+  modelDownloadUrl,
+  type BaselineOptions,
+  type BaselineRun,
   type Diff,
   type ExportCheck,
   type ExportJob,
@@ -17,7 +20,7 @@ import {
 import { useWorkspace } from "@/lib/workspace";
 import { DataTable } from "../DataTable";
 
-type Tab = "rows" | "stats" | "diff" | "card" | "export";
+type Tab = "rows" | "stats" | "diff" | "card" | "export" | "baseline";
 
 export function VersionsPanel() {
   const { versions, activeVersion, setActiveVersion } = useWorkspace();
@@ -51,7 +54,7 @@ export function VersionsPanel() {
       {version && (
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex gap-1 border-b border-[var(--border)] p-1">
-            {(["stats", "rows", "diff", "card", "export"] as Tab[]).map((t) => (
+            {(["stats", "rows", "diff", "card", "export", "baseline"] as Tab[]).map((t) => (
               <button key={t} className={`btn ${tab === t ? "border-[var(--accent)] text-[var(--accent)]" : ""}`} onClick={() => setTab(t)}>
                 {t}
               </button>
@@ -70,8 +73,10 @@ export function VersionsPanel() {
               <DiffView version={version} versions={versions} />
             ) : tab === "card" ? (
               <CardView version={version} />
-            ) : (
+            ) : tab === "export" ? (
               <ExportView version={version} />
+            ) : (
+              <BaselineView version={version} />
             )}
           </div>
         </div>
@@ -352,6 +357,125 @@ function ExportView({ version }: { version: Version }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+function BaselineView({ version }: { version: Version }) {
+  const ws = useWorkspace();
+  const [opts, setOpts] = useState<BaselineOptions | null>(null);
+  const [target, setTarget] = useState<string | undefined>(undefined);
+  const [exclude, setExclude] = useState<Set<string>>(new Set());
+  const [runs, setRuns] = useState<BaselineRun[]>([]);
+
+  useEffect(() => {
+    api.baselineOptions(version.id, target).then((o) => {
+      setOpts(o);
+      setExclude(new Set(o.suggested_exclude));
+    }).catch(() => setOpts(null));
+  }, [version.id, target]);
+  useEffect(() => {
+    api.baselines(version.id).then(setRuns).catch(() => setRuns([]));
+  }, [version.id, ws.exportTick]);
+
+  if (!opts) return <div className="text-xs muted">Loading…</div>;
+  if (!opts.target) return <div className="text-xs muted">No column can serve as a target.</div>;
+  const chosen = target ?? opts.target;
+  const features = opts.columns.filter((c) => c !== chosen);
+
+  const start = async () => {
+    try {
+      await api.startBaseline(version.id, chosen, [...exclude]);
+      setRuns(await api.baselines(version.id));
+    } catch (e) {
+      ws.setError((e as Error).message);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1">predict
+          <select className="input" value={chosen} onChange={(e) => setTarget(e.target.value)}>
+            {opts.targets.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </label>
+        <button className="btn btn-primary" onClick={start}>Train baseline</button>
+        <span className="muted">quick scikit-learn model vs a trivial predictor</span>
+      </div>
+      <div>
+        <div className="muted">exclude from features {opts.suggested_exclude.length > 0 && "(pre-checked: likely leak the answer)"}</div>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+          {features.map((c) => (
+            <label key={c} className={`flex items-center gap-1 mono ${opts.suggested_exclude.includes(c) ? "text-amber-400" : ""}`}>
+              <input type="checkbox" className="accent-[var(--accent)]" checked={exclude.has(c)}
+                onChange={() => setExclude((s) => { const n = new Set(s); if (n.has(c)) n.delete(c); else n.add(c); return n; })} />
+              {c}
+            </label>
+          ))}
+        </div>
+      </div>
+      {runs.map((r) => <BaselineResult key={r.id} run={r} />)}
+    </div>
+  );
+}
+
+function BaselineResult({ run }: { run: BaselineRun }) {
+  const res = run.result;
+  const m = (res.metrics ?? {}) as Record<string, number>;
+  const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+  return (
+    <div className="panel p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mono font-semibold">#{run.id} {run.target}</span>
+        <span className={run.status === "done" ? "text-green-500" : run.status === "error" ? "text-red-400" : "text-sky-400"}>{run.status}</span>
+        {res.model && <span className="muted">{res.model} · {res.split} · {res.rows?.train.toLocaleString()} train / {res.rows?.test.toLocaleString()} test · {res.seconds}s</span>}
+        {run.status === "done" && <a className="ml-auto text-sky-400 hover:underline" href={modelDownloadUrl(run.id)}>model (.joblib)</a>}
+      </div>
+      {run.error && <div className="text-red-400">{run.error}</div>}
+      {res.task === "classification" && (
+        <div className="mt-2 flex flex-wrap gap-4 mono">
+          <span>accuracy <b className="text-[var(--accent)]">{pct(m.accuracy)}</b></span>
+          <span>macro F1 <b>{pct(m.macro_f1)}</b></span>
+          <span className="muted">trivial ({String(res.metrics?.baseline)}): {pct(m.baseline_accuracy)}</span>
+        </div>
+      )}
+      {res.task === "regression" && (
+        <div className="mt-2 flex flex-wrap gap-4 mono">
+          <span>MAE <b className="text-[var(--accent)]">{m.mae.toFixed(3)}</b></span>
+          <span>RMSE {m.rmse.toFixed(3)}</span>
+          <span>R² <b>{m.r2.toFixed(3)}</b></span>
+          <span className="muted">trivial MAE {m.baseline_mae.toFixed(3)}</span>
+        </div>
+      )}
+      {res.features && <div className="mt-1 muted">features: {res.features.map((f) => `${f.column} (${f.as})`).join(", ")}{res.excluded?.length ? ` · excluded: ${res.excluded.join(", ")}` : ""}</div>}
+      {res.confusion && <Confusion labels={res.confusion.labels} matrix={res.confusion.matrix} />}
+    </div>
+  );
+}
+
+function Confusion({ labels, matrix }: { labels: string[]; matrix: number[][] }) {
+  const max = Math.max(1, ...matrix.flat());
+  return (
+    <div className="mt-2 overflow-auto">
+      <table className="text-[10px] mono">
+        <thead>
+          <tr><th className="px-1 text-right muted">true ↓ / pred →</th>{labels.map((l) => <th key={l} className="px-1">{l}</th>)}</tr>
+        </thead>
+        <tbody>
+          {matrix.map((row, i) => (
+            <tr key={labels[i]}>
+              <th className="px-1 text-right">{labels[i]}</th>
+              {row.map((v, j) => (
+                <td key={j} className="h-6 w-8 text-center"
+                  style={{ background: `color-mix(in srgb, ${i === j ? "var(--accent)" : "#f87171"} ${Math.round((100 * v) / max)}%, transparent)` }}>
+                  {v || ""}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

@@ -11,7 +11,11 @@ class Settings(BaseSettings):
 
     database_url: str = f"sqlite:///{BACKEND_DIR / 'data' / 'dataforge.db'}"
     redis_url: str | None = None
+    # Run Alembic migrations at startup; off means create_all (used by tests).
+    auto_migrate: bool = True
     data_dir: Path = BACKEND_DIR / "data"
+    # Folder of connector plugins (*.py); see app/plugins.py.
+    plugins_dir: Path | None = BACKEND_DIR.parent / "plugins"
 
     anthropic_api_key: str | None = None
     planner_model: str = "claude-opus-5-5"
@@ -24,6 +28,13 @@ class Settings(BaseSettings):
     s2_api_key: str | None = None
 
     cors_origins: list[str] = ["http://localhost:3000"]
+    # Off: single-user mode where every request acts as a built-in local user.
+    auth_enabled: bool = False
+    session_days: int = 30
+    # Set when serving over HTTPS so session cookies are Secure.
+    secure_cookies: bool = False
+    # Allow anyone to sign up; otherwise only the first user can.
+    open_signup: bool = True
     # Per-source result cap for each query.
     results_per_query: int = 10
     # Hard cap on a single download, in bytes.

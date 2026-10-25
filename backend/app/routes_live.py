@@ -10,10 +10,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import events, previews, quota
+from .auth import accessible_project_ids, current_user, project_role, read, websocket_user
 from .db import SessionLocal, get_db
 from .jobs import make_http_client
 from .licensing import license_rights
-from .models import Asset, DataNeed, DatasetVersion, Project, SearchResult
+from .models import Asset, DataNeed, DatasetVersion, Project, SearchResult, User
 
 router = APIRouter(prefix="/api")
 
@@ -21,7 +22,9 @@ router = APIRouter(prefix="/api")
 @router.websocket("/projects/{project_id}/ws")
 async def project_events(websocket: WebSocket, project_id: int):
     with SessionLocal() as db:
-        if db.get(Project, project_id) is None:
+        project = db.get(Project, project_id)
+        user = websocket_user(websocket, db)
+        if project is None or user is None or project_role(db, user, project) is None:
             await websocket.close(code=4404)
             return
     await websocket.accept()
@@ -47,7 +50,7 @@ async def project_events(websocket: WebSocket, project_id: int):
             await stream.aclose()
 
 
-@router.get("/projects/{project_id}/stats")
+@router.get("/projects/{project_id}/stats", dependencies=[read("project")])
 def project_stats(project_id: int, db: Session = Depends(get_db)) -> dict:
     if db.get(Project, project_id) is None:
         raise HTTPException(404, "project not found")
@@ -78,7 +81,7 @@ def project_stats(project_id: int, db: Session = Depends(get_db)) -> dict:
     }
 
 
-@router.get("/results/{result_id}/preview")
+@router.get("/results/{result_id}/preview", dependencies=[read("result")])
 async def preview_result(result_id: int, db: Session = Depends(get_db)) -> dict:
     result = db.get(SearchResult, result_id)
     if result is None:
@@ -95,8 +98,11 @@ class MatrixRequest(BaseModel):
 
 
 @router.post("/license-matrix")
-def license_matrix(body: MatrixRequest, db: Session = Depends(get_db)) -> list[dict]:
-    results = db.scalars(select(SearchResult).where(SearchResult.id.in_(body.result_ids))).all()
+def license_matrix(body: MatrixRequest, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[dict]:
+    visible = select(DataNeed.id).where(DataNeed.project_id.in_(accessible_project_ids(db, user)))
+    results = db.scalars(
+        select(SearchResult).where(SearchResult.id.in_(body.result_ids), SearchResult.need_id.in_(visible))
+    ).all()
     return [
         {"result_id": r.id, "title": r.title, "source": r.source, "license": r.license,
          "license_class": r.license_class, "rights": license_rights(r.license)}
@@ -113,7 +119,7 @@ def _asset_root(db: Session, asset_id: int):
     return Path(asset.storage_path)
 
 
-@router.get("/assets/{asset_id}/files")
+@router.get("/assets/{asset_id}/files", dependencies=[read("asset")])
 def asset_files(asset_id: int, db: Session = Depends(get_db)) -> list[dict]:
     return previews.list_files(_asset_root(db, asset_id))
 
@@ -129,7 +135,7 @@ def _asset_path(db: Session, asset_id: int, path: str):
     return target
 
 
-@router.get("/assets/{asset_id}/preview")
+@router.get("/assets/{asset_id}/preview", dependencies=[read("asset")])
 def asset_preview(asset_id: int, path: str = Query(...), db: Session = Depends(get_db)) -> dict:
     target = _asset_path(db, asset_id, path)
     try:
@@ -138,7 +144,7 @@ def asset_preview(asset_id: int, path: str = Query(...), db: Session = Depends(g
         return {"type": "error", "error": f"cannot preview {target.name}: {exc}"}
 
 
-@router.get("/assets/{asset_id}/file")
+@router.get("/assets/{asset_id}/file", dependencies=[read("asset")])
 def asset_file(asset_id: int, path: str = Query(...), db: Session = Depends(get_db)):
     target = _asset_path(db, asset_id, path)
     kind = previews.file_kind(target)

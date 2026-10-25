@@ -28,6 +28,10 @@ async def apply_reviews(ctx, version_id: int) -> None:
     await jobs.apply_reviews(version_id)
 
 
+async def train_baseline(ctx, run_id: int) -> None:
+    await jobs.train_baseline(run_id)
+
+
 async def sync_index(ctx) -> None:
     await jobs.sync_index()
 
@@ -47,7 +51,7 @@ async def shutdown(ctx) -> None:
 
 
 class WorkerSettings:
-    functions = [search_need, download_asset, run_pipeline, sync_index, run_export, apply_reviews]
+    functions = [search_need, download_asset, run_pipeline, sync_index, run_export, apply_reviews, train_baseline]
     cron_jobs = [cron(nightly_index, hour=3, minute=17)]
     on_startup = startup
     on_shutdown = shutdown

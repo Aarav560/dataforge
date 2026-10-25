@@ -16,6 +16,8 @@ export const SOURCE_COLORS: Record<string, string> = {
   pipeline: "#c084fc",
   export: "#34d399",
   openml: "#e879f9",
+  baseline: "#fbbf24",
+  zenodo: "#93c5fd",
 };
 
 const TONE: Record<string, string> = { info: "", ok: "text-[var(--accent)]", warn: "text-amber-400", error: "text-red-400" };

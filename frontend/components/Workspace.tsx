@@ -12,9 +12,11 @@ import { PreviewPane } from "./panels/PreviewPane";
 import { ResultWall } from "./panels/ResultWall";
 import { ReviewQueue } from "./panels/ReviewQueue";
 import { SourceGraph } from "./panels/SourceGraph";
+import { SourcesPanel } from "./panels/SourcesPanel";
+import { TeamPanel } from "./panels/TeamPanel";
 import { VersionsPanel } from "./panels/VersionsPanel";
 
-const STORAGE_KEY = "dataforge.layout.v2";
+const STORAGE_KEY = "dataforge.layout.v3";
 
 export const PANELS: Record<string, { name: string; render: () => React.ReactNode }> = {
   plan: { name: "Plan", render: () => <PlanPanel /> },
@@ -27,6 +29,8 @@ export const PANELS: Record<string, { name: string; render: () => React.ReactNod
   datasets: { name: "Datasets", render: () => <DatasetsPanel /> },
   versions: { name: "Dataset Workspace", render: () => <VersionsPanel /> },
   review: { name: "Review Queue", render: () => <ReviewQueue /> },
+  team: { name: "Team & Sharing", render: () => <TeamPanel /> },
+  sources: { name: "Sources", render: () => <SourcesPanel /> },
 };
 
 const tab = (id: string) => ({ type: "tab", id, component: id, name: PANELS[id].name, enableClose: false });
@@ -57,7 +61,7 @@ const DEFAULT: IJsonModel = {
         weight: 28,
         children: [
           { type: "tabset", weight: 55, children: [tab("preview"), tab("datasets")] },
-          { type: "tabset", weight: 45, children: [tab("licenses")] },
+          { type: "tabset", weight: 45, children: [tab("licenses"), tab("team"), tab("sources")] },
         ],
       },
     ],

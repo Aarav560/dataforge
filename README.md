@@ -37,6 +37,12 @@ Implemented so far:
 - Hub index: nightly sync of Hugging Face, Kaggle and OpenML metadata with local embeddings (bge-small); searches use it first, plus a semantic cache of recent queries
 - Auto-labeling with Claude (text or images) or keyword fallback; low-confidence rows go to a keyboard-driven review queue; applying reviews creates a derived version
 
+**Phase 5: power features**
+- Accounts and team projects (`AUTH_ENABLED=true`): email/password sign-in with scrypt hashes and HttpOnly session cookies (or `Authorization: Bearer` for scripts), teams with owner/editor/viewer roles, projects shared by moving them into a team; every route checks access, and other users' ids answer 404
+- Plugin connectors: drop a `Connector` subclass into `plugins/` or install a package with a `dataforge.connectors` entry point; it joins searches for the kinds it declares. `plugins/zenodo.py` is a working example
+- Train a baseline: a quick scikit-learn model on any dataset version (numeric, vector, categorical, TF-IDF text or pixel features), scored against a trivial predictor, with leakage-prone columns pre-excluded; metrics, confusion matrix and the model file
+- Alembic migrations, applied at startup
+
 ## Layout
 
 ```
@@ -45,7 +51,10 @@ backend/            FastAPI app, arq worker, tests
   app/planner.py    goal → plan (Claude structured output / heuristic fallback)
   app/connectors/   huggingface, kaggle, openml, github, youtube, arxiv, semanticscholar
   app/ranking.py    relevance + quality scoring
-  app/licensing.py  license string → commercial / non_commercial / research_only / unknown
+  app/licensing.py  license string → usage class and rights
+  app/auth.py       sessions, passwords, project access (app/routes_auth.py: sign-in, teams, sharing)
+  app/plugins.py    connector plugin loader
+  app/baseline.py   train-a-baseline
   app/jobs.py       search fan-out, download and pipeline jobs
   app/pipelines/    engine.py (DAG executor), steps*.py, video.py, templates.py
   app/synthetic/    tetris.py (engine + agents), render.py, advisor.py
@@ -57,8 +66,10 @@ backend/            FastAPI app, arq worker, tests
   app/hubindex.py   hub metadata index and semantic query cache (app/embeddings.py)
   app/events.py     event bus (in-process, or Redis pub/sub across worker processes)
   app/worker.py     arq worker entry point
+  migrations/       Alembic migrations
+plugins/            connector plugins (zenodo.py example)
 frontend/           Next.js (App Router) UI; proxies /api/* to the backend
-  components/panels/  plan, feed, graph, result wall, canvas, preview, license matrix
+  components/panels/  plan, feed, graph, results, canvas, preview, licenses, workspace, review, team, sources
   lib/workspace.tsx   shared project state, refreshed from the event stream
 docker-compose.yml  Postgres (pgvector) + Redis
 ```
@@ -102,6 +113,11 @@ The browser connects to the backend's WebSocket directly (`ws://<host>:8000` by 
 | `INDEX_AUTO_SYNC` | Sync the hub index nightly (default `true`; in-process mode syncs when the index is empty or stale) |
 | `INDEX_SIZE_PER_SOURCE` | Entries per source and kind in the hub index (default 5000) |
 | `MAX_DOWNLOAD_BYTES` | Per-asset download cap (default 5 GiB) |
+| `AUTH_ENABLED` | Require sign-in and enable teams (default `false`: single-user, everything owned by a local user) |
+| `OPEN_SIGNUP` | Let anyone create an account (default `true`; when `false`, only the first account can sign up) |
+| `SECURE_COOKIES` | Mark session cookies `Secure`; set when serving over HTTPS |
+| `PLUGINS_DIR` | Folder of connector plugins (default `plugins/` at the repo root) |
+| `AUTO_MIGRATE` | Apply Alembic migrations at startup (default `true`) |
 
 ## API
 
@@ -136,6 +152,13 @@ The browser connects to the backend's WebSocket directly (`ws://<host>:8000` by 
 | `POST` | `/api/reviews/{id}` | `{action: accept\|correct\|reject\|reset, label}` |
 | `POST` | `/api/versions/{id}/apply-reviews` | derived version with reviews applied |
 | `GET`/`POST` | `/api/index`, `/api/index/sync` | hub index status / sync now |
+| `POST` | `/api/auth/signup`, `/login`, `/logout`; `GET /api/auth/me` | accounts and sessions |
+| `GET`/`POST` | `/api/teams`, `/api/teams/{id}/members` | teams and members (`PATCH`/`DELETE` a member) |
+| `PUT` | `/api/projects/{id}/team` | `{team_id}` share with a team, or `null` for private |
+| `GET` | `/api/sources` | built-in and plugin connectors |
+| `GET` | `/api/versions/{id}/baseline-options` | target candidates and suggested exclusions |
+| `POST`/`GET` | `/api/versions/{id}/baselines` | `{target, exclude}` train / list runs |
+| `GET` | `/api/baselines/{id}/model` | trained model (joblib) |
 
 ## Tests
 
@@ -144,10 +167,34 @@ cd backend && .venv/bin/python -m pytest
 cd frontend && npm run typecheck && npm run build
 ```
 
-## Not yet built
+## Writing a connector plugin
 
-Phase 5 (team projects and auth, plugin connectors, train-a-baseline).
+```python
+# plugins/my_catalog.py
+from app.connectors.base import Connector, RawResult
 
-The video template is tuned for clean, high-contrast footage. For real broadcasts, set a manual playfield box on the *Detect board* step if auto-detection fails. The API is currently single-user and unauthenticated, so don't expose it publicly.
+class MyCatalog(Connector):
+    """Our internal data catalog."""
+    name = "mycatalog"
+    kinds = frozenset({"dataset"})
+
+    def __init__(self, client, settings=None):
+        super().__init__(client)
+
+    async def search(self, query, kind, limit): ...      # -> list[RawResult]
+    async def download(self, external_id, kind, dest, max_bytes): ...  # -> bytes written
+```
+
+Restart the backend; the *Sources* panel shows loaded plugins and any load errors. Plugins run with the server's permissions, so only install ones you trust.
+
+## Deploying
+
+Before exposing DataForge beyond your machine: set `AUTH_ENABLED=true`, `SECURE_COOKIES=true` behind HTTPS, `OPEN_SIGNUP=false` once your team has signed up, and `CORS_ORIGINS` to your frontend's origin. Run the API and the arq worker as separate processes against Postgres and Redis.
+
+## Limitations
+
+The video template is tuned for clean, high-contrast footage. For real broadcasts, set a manual playfield box on the *Detect board* step if auto-detection fails.
+
+Databases created before migrations existed are adopted automatically only if their schema already matches; otherwise back them up and recreate them.
 
 The first index sync downloads the ~65 MB embedding model (cached in `DATA_DIR/models`) and takes a few minutes; without it, the index falls back to hashed bag-of-words vectors.
