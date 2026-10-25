@@ -1,22 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { api, type Advice, type Asset, type Pipeline, type Rows, type Template, type Version } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { api, type Advice, type Rows, type Template, type Version } from "@/lib/api";
+import { useWorkspace } from "@/lib/workspace";
+import { AssetPanel } from "./AssetPanel";
 import { DataTable } from "./DataTable";
 
-const POLL_MS = 1500;
-
-interface Props {
-  projectId: number;
-  assets: Asset[];
-  onError: (msg: string) => void;
-}
-
-export function DatasetsPanel({ projectId, assets, onError }: Props) {
+export function DatasetsPanel() {
+  const ws = useWorkspace();
+  const { assets, pipelines, versions } = ws;
+  const projectId = ws.project?.id;
+  const onError = ws.setError;
   const [advice, setAdvice] = useState<Advice | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
-  const [versions, setVersions] = useState<Version[]>([]);
   const [template, setTemplate] = useState("");
   const [assetIds, setAssetIds] = useState<Set<number>>(new Set());
   const [preview, setPreview] = useState<{ version: Version; rows: Rows } | null>(null);
@@ -24,34 +20,17 @@ export function DatasetsPanel({ projectId, assets, onError }: Props) {
 
   const doneAssets = assets.filter((a) => a.status === "done");
 
-  const refresh = useCallback(async () => {
-    try {
-      const [p, v] = await Promise.all([api.pipelines(projectId), api.versions(projectId)]);
-      setPipelines(p);
-      setVersions(v);
-    } catch (e) {
-      onError((e as Error).message);
-    }
-  }, [projectId, onError]);
-
   useEffect(() => {
     setPreview(null);
+    setAdvice(null);
     api.templates().then(setTemplates).catch(() => {});
-    api.advice(projectId).then(setAdvice).catch(() => {});
-    refresh();
-  }, [projectId, refresh]);
-
-  const running = versions.some((v) => v.status === "running");
-  useEffect(() => {
-    if (!running) return;
-    const t = setInterval(refresh, POLL_MS);
-    return () => clearInterval(t);
-  }, [running, refresh]);
+    if (projectId !== undefined) api.advice(projectId).then(setAdvice).catch(() => {});
+  }, [projectId]);
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
       await fn();
-      await refresh();
+      await ws.refresh(["pipelines", "versions", "stats"]);
     } catch (e) {
       onError((e as Error).message);
     }
@@ -61,6 +40,7 @@ export function DatasetsPanel({ projectId, assets, onError }: Props) {
 
   const create = (tpl: string, ids: number[]) =>
     act(async () => {
+      if (projectId === undefined) return;
       const p = await api.createPipeline(projectId, { template: tpl, asset_ids: ids });
       await api.runPipeline(p.id);
     });
@@ -74,7 +54,8 @@ export function DatasetsPanel({ projectId, assets, onError }: Props) {
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 p-2">
+      <AssetPanel assets={assets} />
       {advice && (
         <div className={`panel p-3 ${advice.recommended ? "border-sky-500/50" : ""}`}>
           <div className="text-xs uppercase tracking-wide muted">Synthetic data advisor</div>

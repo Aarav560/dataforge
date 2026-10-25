@@ -160,7 +160,12 @@ async def start_version(db: Session, project_id: int, graph: dict, pipeline_id: 
     version = DatasetVersion(project_id=project_id, pipeline_id=pipeline_id, version=latest + 1, graph_json=graph)
     db.add(version)
     db.commit()
-    await jobqueue.enqueue("run_pipeline", version.id)
+    try:
+        await jobqueue.enqueue("run_pipeline", version.id)
+    except jobqueue.QueueUnavailable as exc:
+        version.status, version.error = "error", str(exc)
+        db.commit()
+        raise
     return version
 
 

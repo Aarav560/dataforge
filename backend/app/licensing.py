@@ -48,3 +48,29 @@ def classify_license(license_: str | None) -> str:
     if raw.startswith(("gpl", "gnu", "mit", "bsd", "apache", "database: open database")):
         return COMMERCIAL
     return UNKNOWN
+
+
+def license_rights(license_: str | None) -> dict[str, bool | None]:
+    """Usage rights for the license matrix.
+
+    True = allowed, False = not allowed, None = unknown (check the terms).
+    `attribution` and `share_alike` are obligations rather than permissions.
+    """
+    cls = classify_license(license_)
+    raw = (license_ or "").lower()
+    normalized = re.sub(r"[\s_]+", "-", raw)
+    if cls == UNKNOWN:
+        return {"commercial": None, "redistribution": None, "attribution": None, "share_alike": None}
+    if cls == LOCAL_ONLY:
+        return {"commercial": False, "redistribution": False, "attribution": True, "share_alike": False}
+    public_domain = any(t in normalized for t in ("cc0", "public-domain", "unlicense", "pddl", "wtfpl"))
+    copyleft = any(t in normalized for t in ("-sa", "gpl", "odbl", "cdla-sharing", "share-alike", "sharealike"))
+    if "agpl" in normalized or "lgpl" in normalized or normalized.startswith("gpl"):
+        copyleft = True
+    return {
+        "commercial": cls == COMMERCIAL,
+        # Research-only and NC licenses usually still allow sharing under the same terms.
+        "redistribution": cls != RESEARCH_ONLY or None,
+        "attribution": not public_domain,
+        "share_alike": copyleft,
+    }

@@ -153,8 +153,8 @@ async def test_download_progress_reported(tmp_path, monkeypatch):
 _orig_progress = jobs._report_progress
 
 
-def _fast_progress(asset_id, dest):
-    return _orig_progress(asset_id, dest, interval=0.05)
+def _fast_progress(asset_id, dest, **kw):
+    return _orig_progress(asset_id, dest, interval=0.05, **kw)
 
 
 def test_paper_links_are_followed(monkeypatch):
@@ -245,3 +245,17 @@ def test_pipeline_failure_recorded():
         v = _wait_version(client, client.post(f"/api/pipelines/{pipe['id']}/run").json()["id"])
         assert v["status"] == "error" and "not downloaded" in v["error"]
         assert client.get(f"/api/versions/{v['id']}/rows").status_code == 409
+
+
+def test_queue_unavailable_returns_503(monkeypatch):
+    from app import jobqueue
+    from app.config import get_settings
+
+    with TestClient(app) as client:
+        pid = client.post("/api/projects", json={"goal": "tetris"}).json()["id"]
+        monkeypatch.setattr(get_settings(), "redis_url", "redis://127.0.0.1:1")
+        monkeypatch.setattr(jobqueue, "_pool", None)
+        resp = client.post(f"/api/projects/{pid}/search")
+        assert resp.status_code == 503 and "queue unavailable" in resp.json()["detail"]
+        needs = client.get(f"/api/projects/{pid}").json()["needs"]
+        assert all(n["status"] == "error" for n in needs)

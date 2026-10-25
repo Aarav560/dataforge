@@ -221,11 +221,11 @@ Dense, terminal-meets-mission-control layout. Dark theme, neon accents, monospac
 - [x] arXiv / Semantic Scholar connectors
 
 ### Phase 3 — Maximalist UI
-- [ ] Dockable panel layout
-- [ ] Live crawl feed over WebSockets
-- [ ] 3D source graph
-- [ ] Preview pane + License matrix
-- [ ] Pipeline canvas (React Flow)
+- [x] Dockable panel layout
+- [x] Live crawl feed over WebSockets
+- [x] 3D source graph
+- [x] Preview pane + License matrix
+- [x] Pipeline canvas (React Flow)
 
 ### Phase 4 — Dataset platform
 - [ ] Versioning + diffs

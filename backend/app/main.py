@@ -1,7 +1,8 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from .db import SessionLocal, get_db, init_db
 from .models import Asset, DataNeed, DatasetVersion, Project, SearchResult
 from .planner import make_plan
 from .routes_datasets import router as datasets_router
+from .routes_live import router as live_router
 from .schemas import (
     AssetOut,
     DownloadRequest,
@@ -51,7 +53,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="DataForge", version="0.1.0", lifespan=lifespan)
+@app.exception_handler(jobqueue.QueueUnavailable)
+async def queue_unavailable(request: Request, exc: jobqueue.QueueUnavailable):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 app.include_router(datasets_router)
+app.include_router(live_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
@@ -177,8 +185,15 @@ async def start_search(project_id: int, body: SearchRequest | None = None, db: S
     for need in targets:
         need.status, need.error = "searching", None
     db.commit()
-    for need in targets:
-        await jobqueue.enqueue("search_need", need.id)
+    try:
+        for need in targets:
+            await jobqueue.enqueue("search_need", need.id)
+    except jobqueue.QueueUnavailable as exc:
+        for need in targets:
+            if need.status == "searching":
+                need.status, need.error = "error", str(exc)
+        db.commit()
+        raise
     return _project_out(db, project)
 
 
@@ -240,8 +255,14 @@ async def start_downloads(project_id: int, body: DownloadRequest, db: Session = 
         assets.append(asset)
         created.append(asset)
     db.commit()
-    for asset in created:
-        await jobqueue.enqueue("download_asset", asset.id)
+    try:
+        for asset in created:
+            await jobqueue.enqueue("download_asset", asset.id)
+    except jobqueue.QueueUnavailable as exc:
+        for asset in created:
+            asset.status, asset.error = "error", str(exc)
+        db.commit()
+        raise
     return [_asset_out(a) for a in assets]
 
 

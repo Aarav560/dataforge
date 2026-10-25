@@ -8,13 +8,14 @@ import hashlib
 import logging
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
-from . import ranking
+from . import events, quota, ranking
 from .config import Settings, get_settings
 from .connectors import Connector, LinkRef, RawResult, build_connectors
 from .db import SessionLocal
@@ -27,7 +28,11 @@ USER_AGENT = "DataForge/0.1 (+https://github.com/aarav560/dataforge)"
 
 
 def make_http_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=120.0), headers={"User-Agent": USER_AGENT})
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(30.0, read=120.0),
+        headers={"User-Agent": USER_AGENT},
+        event_hooks={"response": [quota.record]},
+    )
 
 
 async def _follow_paper_links(best: dict, connectors: dict[str, Connector], description: str, limit: int) -> list[str]:
@@ -63,6 +68,74 @@ def _dedupe_key(title: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name)
 
 
+def _score(raw: RawResult, description: str, query: str):
+    lic = classify_license(raw.license)
+    rel = ranking.relevance(raw, description, query)
+    qual = ranking.quality(raw, lic)
+    return (raw, rel, qual, ranking.combined(rel, qual), lic)
+
+
+def _merge(best: dict, scored: list) -> list[tuple[str, str]]:
+    """Keep the best-scoring copy of each result; return keys that changed."""
+    changed = []
+    for entry in scored:
+        raw = entry[0]
+        key = (raw.source, raw.external_id)
+        if key not in best or best[key][3] < entry[3]:
+            best[key] = entry
+            changed.append(key)
+    return changed
+
+
+def _save_results(need_id: int, entries: list) -> list[int]:
+    """Upsert scored results for a need; returns their row ids."""
+    if not entries:
+        return []
+    with SessionLocal() as db:
+        existing = {
+            (r.source, r.external_id): r
+            for r in db.scalars(select(SearchResult).where(SearchResult.need_id == need_id)).all()
+        }
+        rows = []
+        for raw, rel, qual, score, lic in entries:
+            meta = dict(raw.meta)
+            meta.update(downloads=raw.downloads, likes=raw.likes, usability=raw.usability, tags=raw.tags[:20])
+            values = dict(
+                kind=raw.kind, url=raw.url, title=raw.title, description=raw.description,
+                size_bytes=raw.size_bytes, format=raw.format, license=raw.license, license_class=lic,
+                relevance=rel, quality=qual, score=score, meta=meta, updated_at=raw.updated_at,
+            )
+            row = existing.get((raw.source, raw.external_id))
+            if row is None:
+                row = SearchResult(need_id=need_id, source=raw.source, external_id=raw.external_id, **values)
+                db.add(row)
+            else:
+                for k, v in values.items():
+                    setattr(row, k, v)
+            rows.append(row)
+        db.commit()
+        return [r.id for r in rows]
+
+
+def _flag_mirrors(need_id: int) -> None:
+    """Mark likely mirrors: the same repo name on different hubs."""
+    with SessionLocal() as db:
+        results = db.scalars(select(SearchResult).where(SearchResult.need_id == need_id)).all()
+        by_name: dict[str, list[SearchResult]] = {}
+        for r in results:
+            by_name.setdefault(_dedupe_key(r.title), []).append(r)
+        for r in results:
+            mirrors = [f"{o.source}:{o.external_id}" for o in by_name[_dedupe_key(r.title)] if o.source != r.source]
+            if mirrors != (r.meta or {}).get("possible_mirrors", []):
+                meta = dict(r.meta or {})
+                if mirrors:
+                    meta["possible_mirrors"] = mirrors
+                else:
+                    meta.pop("possible_mirrors", None)
+                r.meta = meta
+        db.commit()
+
+
 async def search_need(
     need_id: int,
     *,
@@ -70,91 +143,73 @@ async def search_need(
     settings: Settings | None = None,
     connectors: dict[str, Connector] | None = None,
 ) -> None:
+    """Fan a need's queries out to every source, saving and announcing hits as each source answers."""
     settings = settings or get_settings()
     own_client = client is None
     client = client or make_http_client()
+    project_id = None
     try:
         connectors = connectors or build_connectors(client, settings)
         with SessionLocal() as db:
             need = db.get(DataNeed, need_id)
             if need is None:
                 return
+            project_id = need.project_id
             need.status, need.error = "searching", None
+            db.execute(delete(SearchResult).where(SearchResult.need_id == need_id))
             db.commit()
             description, kind, queries = need.description, need.kind, dict(need.queries or {})
 
-        calls = []
-        for source, source_queries in queries.items():
-            conn = connectors.get(source)
-            if conn is None or kind not in conn.kinds:
-                continue
-            for q in source_queries:
-                calls.append((source, q, conn.search(q, kind, settings.results_per_query)))
+        async def one(source: str, query: str, conn: Connector):
+            started = time.monotonic()
+            try:
+                return source, query, await conn.search(query, kind, settings.results_per_query), time.monotonic() - started
+            except Exception as exc:  # reported per source, never fatal for the need
+                return source, query, exc, time.monotonic() - started
 
-        outcomes = await asyncio.gather(*(c[2] for c in calls), return_exceptions=True)
+        calls = [
+            one(source, q, conn)
+            for source, source_queries in queries.items()
+            if (conn := connectors.get(source)) is not None and kind in conn.kinds
+            for q in source_queries
+        ]
+        events.publish(project_id, "need_started", need_id=need_id, description=description, kind=kind,
+                       sources=sorted(queries), calls=len(calls))
 
-        best: dict[tuple[str, str], tuple[RawResult, float, float, float, str]] = {}
+        best: dict[tuple[str, str], tuple] = {}
         errors: list[str] = []
-        for (source, query, _), outcome in zip(calls, outcomes):
+        for fut in asyncio.as_completed(calls):
+            source, query, outcome, elapsed = await fut
             if isinstance(outcome, BaseException):
                 log.warning("search %s %r failed: %s", source, query, outcome)
                 errors.append(f"{source} ({query}): {outcome}")
+                events.publish(project_id, "source_error", need_id=need_id, source=source, query=query,
+                               error=str(outcome)[:300])
                 continue
-            for raw in outcome:
-                lic = classify_license(raw.license)
-                rel = ranking.relevance(raw, description, query)
-                qual = ranking.quality(raw, lic)
-                score = ranking.combined(rel, qual)
-                key = (raw.source, raw.external_id)
-                if key not in best or best[key][3] < score:
-                    best[key] = (raw, rel, qual, score, lic)
+            changed = _merge(best, [_score(raw, description, query) for raw in outcome])
+            ids = _save_results(need_id, [best[k] for k in changed])
+            events.publish(project_id, "hits", need_id=need_id, source=source, query=query, count=len(outcome),
+                           new=len(ids), ms=round(elapsed * 1000), result_ids=ids,
+                           titles=[best[k][0].title for k in changed[:5]])
 
+        before = set(best)
         errors += await _follow_paper_links(best, connectors, description, settings.max_followed_links)
-
-        # Flag likely mirrors: same repo name on different hubs.
-        by_name: dict[str, list[tuple[str, str]]] = {}
-        for key, (raw, *_rest) in best.items():
-            by_name.setdefault(_dedupe_key(raw.title), []).append(key)
+        followed = [k for k in best if k not in before]
+        if followed:
+            ids = _save_results(need_id, [best[k] for k in followed])
+            events.publish(project_id, "hits", need_id=need_id, source="via_paper", query="", count=len(ids),
+                           new=len(ids), ms=0, result_ids=ids, titles=[best[k][0].title for k in followed[:5]])
+        _flag_mirrors(need_id)
 
         with SessionLocal() as db:
             need = db.get(DataNeed, need_id)
             if need is None:
                 return
-            db.execute(delete(SearchResult).where(SearchResult.need_id == need_id))
-            for key, (raw, rel, qual, score, lic) in best.items():
-                mirrors = [
-                    f"{s}:{e}" for s, e in by_name.get(_dedupe_key(raw.title), []) if s != raw.source
-                ]
-                meta = dict(raw.meta)
-                meta.update(downloads=raw.downloads, likes=raw.likes, usability=raw.usability, tags=raw.tags[:20])
-                if mirrors:
-                    meta["possible_mirrors"] = mirrors
-                db.add(
-                    SearchResult(
-                        need_id=need_id,
-                        source=raw.source,
-                        kind=raw.kind,
-                        external_id=raw.external_id,
-                        url=raw.url,
-                        title=raw.title,
-                        description=raw.description,
-                        size_bytes=raw.size_bytes,
-                        format=raw.format,
-                        license=raw.license,
-                        license_class=lic,
-                        relevance=rel,
-                        quality=qual,
-                        score=score,
-                        meta=meta,
-                        updated_at=raw.updated_at,
-                    )
-                )
-            if calls and len(errors) == len(calls):
-                need.status = "error"
-            else:
-                need.status = "done"
+            need.status = "error" if calls and len(errors) >= len(calls) and not best else "done"
             need.error = "\n".join(errors) or None
             db.commit()
+            status = need.status
+        events.publish(project_id, "need_done", need_id=need_id, status=status, results=len(best), errors=len(errors))
     except Exception as exc:
         log.exception("search_need %s crashed", need_id)
         with SessionLocal() as db:
@@ -162,6 +217,7 @@ async def search_need(
             if need is not None:
                 need.status, need.error = "error", str(exc)
                 db.commit()
+        events.publish(project_id, "need_done", need_id=need_id, status="error", results=0, errors=1)
     finally:
         if own_client:
             await client.aclose()
@@ -182,7 +238,8 @@ def _dir_size(path: Path) -> int:
     return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
 
 
-async def _report_progress(asset_id: int, dest: Path, interval: float = 2.0) -> None:
+async def _report_progress(asset_id: int, dest: Path, interval: float = 2.0, project_id: int | None = None) -> None:
+    last, last_t = 0, time.monotonic()
     while True:
         await asyncio.sleep(interval)
         size = await asyncio.to_thread(_dir_size, dest)
@@ -192,6 +249,10 @@ async def _report_progress(asset_id: int, dest: Path, interval: float = 2.0) -> 
                 return
             asset.bytes_downloaded = size
             db.commit()
+        now = time.monotonic()
+        rate = (size - last) / max(now - last_t, 1e-6)
+        last, last_t = size, now
+        events.publish(project_id, "download_progress", asset_id=asset_id, bytes=size, rate=round(rate))
 
 
 async def download_asset(
@@ -213,14 +274,16 @@ async def download_asset(
                 return
             result = asset.result
             source, external_id, kind = result.source, result.external_id, result.kind
+            project_id, title = result.need.project_id, result.title
             asset.status, asset.error, asset.storage_path = "downloading", None, str(dest)
             db.commit()
+        events.publish(project_id, "download_started", asset_id=asset_id, title=title, source=source)
 
         conn = connectors[source]
         if dest.exists():
             shutil.rmtree(dest)
         dest.mkdir(parents=True)
-        progress = asyncio.create_task(_report_progress(asset_id, dest))
+        progress = asyncio.create_task(_report_progress(asset_id, dest, project_id=project_id))
         try:
             written = await conn.download(external_id, kind, dest, settings.max_download_bytes)
         finally:
@@ -231,22 +294,24 @@ async def download_asset(
             asset = db.get(Asset, asset_id)
             asset.status, asset.bytes_downloaded, asset.checksum = "done", written, checksum
             db.commit()
+        events.publish(project_id, "download_done", asset_id=asset_id, title=title, bytes=written)
     except Exception as exc:
         log.warning("download_asset %s failed: %s", asset_id, exc)
         shutil.rmtree(dest, ignore_errors=True)
+        project_id = None
         with SessionLocal() as db:
             asset = db.get(Asset, asset_id)
             if asset is not None:
                 asset.status, asset.error, asset.storage_path = "error", str(exc), None
+                project_id = asset.result.need.project_id
                 db.commit()
+        events.publish(project_id, "download_error", asset_id=asset_id, error=str(exc)[:300])
     finally:
         if own_client:
             await client.aclose()
 
 
 def _project_asset_paths(db, project_id: int) -> dict[int, Path]:
-    from sqlalchemy import select
-
     rows = db.execute(
         select(Asset.id, Asset.storage_path)
         .join(SearchResult)
@@ -265,8 +330,14 @@ async def run_pipeline(version_id: int, *, settings: Settings | None = None) -> 
     out_dir = settings.data_dir / "versions" / str(version_id)
     lines: list[str] = []
 
+    project_id = None
+
     def log_line(msg: str) -> None:
         lines.append(msg)
+        events.publish(project_id, "pipeline_log", version_id=version_id, message=msg)
+
+    def on_step(node_id: str, state: str) -> None:
+        events.publish(project_id, "pipeline_step", version_id=version_id, node_id=node_id, state=state)
 
     try:
         with SessionLocal() as db:
@@ -274,13 +345,15 @@ async def run_pipeline(version_id: int, *, settings: Settings | None = None) -> 
             if version is None:
                 return
             graph = version.graph_json
+            project_id = version.project_id
             asset_paths = _project_asset_paths(db, version.project_id)
+        events.publish(project_id, "version_started", version_id=version_id)
 
         if out_dir.exists():
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True)
         env = Env(asset_paths=asset_paths, work_dir=out_dir, settings=settings, log=log_line)
-        ctx = await asyncio.to_thread(run, graph, env)
+        ctx = await asyncio.to_thread(run, graph, env, on_step)
         if ctx.table is None:
             raise RuntimeError("pipeline produced no table; end it with a step that outputs rows")
         path = out_dir / "data.parquet"
@@ -295,6 +368,8 @@ async def run_pipeline(version_id: int, *, settings: Settings | None = None) -> 
             version.log = "\n".join(lines)
             version.finished_at = datetime.now(timezone.utc)
             db.commit()
+            rows = version.row_count
+        events.publish(project_id, "version_done", version_id=version_id, rows=rows)
     except Exception as exc:
         log.warning("run_pipeline %s failed: %s", version_id, exc)
         shutil.rmtree(out_dir, ignore_errors=True)
@@ -305,3 +380,4 @@ async def run_pipeline(version_id: int, *, settings: Settings | None = None) -> 
                 version.log = "\n".join(lines)
                 version.finished_at = datetime.now(timezone.utc)
                 db.commit()
+        events.publish(project_id, "version_error", version_id=version_id, error=str(exc)[:300])

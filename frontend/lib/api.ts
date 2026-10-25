@@ -146,6 +146,58 @@ export interface Rows {
   rows: Record<string, unknown>[];
 }
 
+export interface Stats {
+  results: number;
+  bytes_gathered: number;
+  assets_done: number;
+  workers_active: number;
+  searching: number;
+  downloads: { asset_id: number; bytes: number; size: number | null; status: string }[];
+  running_versions: number;
+  latest_version: number | null;
+  rows: number;
+  quota: Record<string, { remaining: number; limit: number | null; reset: string | null }>;
+}
+
+export type Preview =
+  | { type: "video"; embed?: string; thumbnail?: string; mime?: string }
+  | { type: "table"; columns: { name: string; type: string }[]; rows: Record<string, unknown>[]; images?: string[] }
+  | { type: "markdown" | "text"; text: string }
+  | { type: "paper"; abstract: string | null; authors: string[]; links: { source: string; external_id: string; url: string }[]; pdf?: string }
+  | { type: "image"; mime?: string }
+  | { type: "meta"; description: string | null; size_bytes: number | null; format: string | null; license: string | null }
+  | { type: "binary"; size: number }
+  | { type: "error"; error: string };
+
+export interface AssetFile {
+  path: string;
+  size: number;
+  kind: "table" | "image" | "video" | "text" | "binary";
+}
+
+export interface Rights {
+  commercial: boolean | null;
+  redistribution: boolean | null;
+  attribution: boolean | null;
+  share_alike: boolean | null;
+}
+
+export interface MatrixRow {
+  result_id: number;
+  title: string;
+  source: string;
+  license: string | null;
+  license_class: LicenseClass;
+  rights: Rights;
+}
+
+export interface LiveEvent {
+  type: string;
+  ts: number;
+  replay?: boolean;
+  [key: string]: unknown;
+}
+
 export interface Health {
   planner: "claude" | "heuristic";
   queue: string;
@@ -204,6 +256,13 @@ export const api = {
   deletePipeline: (id: number) => call<void>(`/pipelines/${id}`, { method: "DELETE" }),
   runPipeline: (id: number) => call<Version>(`/pipelines/${id}/run`, { method: "POST" }),
   versions: (projectId: number) => call<Version[]>(`/projects/${projectId}/versions`),
+  stats: (projectId: number) => call<Stats>(`/projects/${projectId}/stats`),
+  preview: (resultId: number) => call<Preview>(`/results/${resultId}/preview`),
+  licenseMatrix: (resultIds: number[]) =>
+    call<MatrixRow[]>("/license-matrix", { method: "POST", body: JSON.stringify({ result_ids: resultIds }) }),
+  assetFiles: (assetId: number) => call<AssetFile[]>(`/assets/${assetId}/files`),
+  assetPreview: (assetId: number, path: string) =>
+    call<Preview>(`/assets/${assetId}/preview?path=${encodeURIComponent(path)}`),
   rows: (versionId: number, offset = 0, limit = 50) =>
     call<Rows>(`/versions/${versionId}/rows?offset=${offset}&limit=${limit}`),
 };
@@ -222,4 +281,15 @@ export function formatBytes(n: number | null | undefined): string {
 
 export function sourceQueries(need: Need): string[] {
   return Object.values(need.queries)[0] ?? [];
+}
+
+export function assetFileUrl(assetId: number, path: string): string {
+  return `/api/assets/${assetId}/file?path=${encodeURIComponent(path)}`;
+}
+
+export function wsUrl(projectId: number): string {
+  const base = process.env.NEXT_PUBLIC_WS_URL;
+  if (base) return `${base.replace(/\/$/, "")}/api/projects/${projectId}/ws`;
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.hostname}:8000/api/projects/${projectId}/ws`;
 }

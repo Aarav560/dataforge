@@ -18,6 +18,15 @@ Implemented so far:
 - Synthetic Data Advisor (rules, refined by Claude when available) with built-in Tetris and arithmetic generators, or a generator scaffold script for other domains
 - Every pipeline run is a new dataset version (Parquet), previewable in the UI
 
+**Phase 3: maximalist UI**
+- Dockable, resizable panels (flexlayout) whose arrangement is remembered per browser; single-panel tabs on phones
+- Live crawl feed over WebSockets: results are saved and pushed per source as each answers, with per-source counters
+- 3D source graph (goal → needs → sources → results, colored by license), click to preview
+- Preview pane: dataset viewer rows and images, model cards, READMEs, paper abstracts with linked resources, YouTube embeds, and a browser for downloaded files
+- License matrix of selected and downloaded sources × commercial / redistribution / attribution / share-alike
+- Pipeline canvas (React Flow): add steps, wire them, edit parameters, save and run with live step status
+- Stats HUD (rows, results, bytes gathered, active workers, API quota) and a Ctrl+K command bar (`/search`, `/pipeline`, `/download`, `/show`, `/open`)
+
 ## Layout
 
 ```
@@ -31,8 +40,12 @@ backend/            FastAPI app, arq worker, tests
   app/pipelines/    engine.py (DAG executor), steps.py, video.py, templates.py
   app/synthetic/    tetris.py (engine + agents), render.py, advisor.py
   app/routes_datasets.py  pipelines, versions, synthetic advice
+  app/routes_live.py      WebSocket events, stats, previews, license matrix, asset files
+  app/events.py     event bus (in-process, or Redis pub/sub across worker processes)
   app/worker.py     arq worker entry point
 frontend/           Next.js (App Router) UI; proxies /api/* to the backend
+  components/panels/  plan, feed, graph, result wall, canvas, preview, license matrix
+  lib/workspace.tsx   shared project state, refreshed from the event stream
 docker-compose.yml  Postgres (pgvector) + Redis
 ```
 
@@ -56,6 +69,8 @@ cd frontend
 npm install
 npm run dev                      # http://localhost:3000
 ```
+
+The browser connects to the backend's WebSocket directly (`ws://<host>:8000` by default; set `NEXT_PUBLIC_WS_URL` when the backend lives elsewhere). If the socket is down, the UI falls back to polling.
 
 ### Configuration (`backend/.env`)
 
@@ -91,6 +106,11 @@ npm run dev                      # http://localhost:3000
 | `GET` | `/api/projects/{id}/versions`, `/api/versions/{id}` | versions |
 | `GET` | `/api/versions/{id}/rows` | paged rows (`offset`, `limit`) |
 | `GET` | `/api/projects/{id}/synthetic` | synthetic-data advice (`?refresh=true`) |
+| `WS` | `/api/projects/{id}/ws` | live events (recent backlog replayed on connect) |
+| `GET` | `/api/projects/{id}/stats` | HUD numbers |
+| `GET` | `/api/results/{id}/preview` | remote preview of a result |
+| `POST` | `/api/license-matrix` | `{result_ids}` → rights per source |
+| `GET` | `/api/assets/{id}/files`, `/preview`, `/file` | browse downloaded files |
 
 ## Tests
 
@@ -101,6 +121,6 @@ cd frontend && npm run typecheck && npm run build
 
 ## Not yet built
 
-Phases 3–5: the maximalist dockable UI with WebSocket streaming, diffs between versions, dataset cards, export formats, pre-indexing and semantic cache, auto-labeling, and auth (Clerk / Auth.js).
+Phases 4–5: diffs between versions, dataset cards, export formats, pre-indexing and semantic cache, auto-labeling, and auth (Clerk / Auth.js).
 
 The video template is tuned for clean, high-contrast footage. For real broadcasts, set a manual playfield box on the *Detect board* step if auto-detection fails. The `projects.user_id` column is in place for auth, but the API is currently single-user and unauthenticated, so don't expose it publicly.

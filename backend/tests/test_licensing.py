@@ -20,3 +20,21 @@ from app.licensing import classify_license
 )
 def test_classify(value, expected):
     assert classify_license(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("mit", {"commercial": True, "redistribution": True, "attribution": True, "share_alike": False}),
+        ("cc0-1.0", {"commercial": True, "redistribution": True, "attribution": False, "share_alike": False}),
+        ("cc-by-sa-4.0", {"commercial": True, "redistribution": True, "attribution": True, "share_alike": True}),
+        ("cc-by-nc-4.0", {"commercial": False, "redistribution": True, "attribution": True, "share_alike": False}),
+        ("YouTube Standard License", {"commercial": False, "redistribution": False, "attribution": True, "share_alike": False}),
+        (None, {"commercial": None, "redistribution": None, "attribution": None, "share_alike": None}),
+        ("gpl-3.0", {"commercial": True, "redistribution": True, "attribution": True, "share_alike": True}),
+    ],
+)
+def test_rights(value, expected):
+    from app.licensing import license_rights
+
+    assert license_rights(value) == expected
