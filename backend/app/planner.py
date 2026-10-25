@@ -15,7 +15,7 @@ from .config import Settings
 
 log = logging.getLogger(__name__)
 
-KINDS = ("dataset", "model", "environment", "code")
+KINDS = ("dataset", "model", "environment", "code", "video", "paper")
 APPROACHES = ("supervised", "reinforcement_learning", "imitation_learning", "self_supervised", "unsupervised")
 
 # Which connectors serve each need kind.
@@ -24,6 +24,8 @@ KIND_SOURCES: dict[str, tuple[str, ...]] = {
     "model": ("huggingface", "github"),
     "environment": ("github",),
     "code": ("github",),
+    "video": ("youtube",),
+    "paper": ("arxiv", "semanticscholar"),
 }
 
 
@@ -85,8 +87,10 @@ Given a user's goal, decide the most suitable ML approach and list the distinct 
 - model: pretrained models or checkpoints usable as baselines, teachers or feature extractors
 - environment: simulators or environments for generating data or RL training
 - code: scrapers, loaders or preprocessing scripts that produce the data
+- video: footage (e.g. gameplay, demonstrations) that can be turned into frames and labels
+- paper: research papers whose methods or datasets are relevant
 
-For each need give 1-3 short keyword search queries (2-4 words each) suited to search boxes on Hugging Face, Kaggle and GitHub. Queries are matched lexically, so use the words dataset authors would put in titles, not full sentences. Return 3-6 needs, most important first."""
+For each need give 1-3 short keyword search queries (2-4 words each) suited to search boxes on Hugging Face, Kaggle, GitHub, YouTube and arXiv. Queries are matched lexically, so use the words dataset authors would put in titles, not full sentences. Return 3-6 needs, most important first."""
 
 
 async def plan_with_claude(goal: str, settings: Settings) -> Plan:
@@ -158,6 +162,9 @@ def plan_heuristic(goal: str) -> Plan:
         needs.append(
             PlannedNeed(f"{topic} simulator or environment", "environment", [f"{topic} gym", f"{topic} environment"])
         )
+        needs.append(PlannedNeed(f"{topic} gameplay or demonstration footage", "video", [f"{topic} gameplay"]))
+    method = {"reinforcement_learning": "reinforcement learning", "self_supervised": "language model"}.get(approach, "")
+    needs.append(PlannedNeed(f"Research papers on {topic}", "paper", [f"{topic} {method}".strip()]))
     needs.append(PlannedNeed(f"Scrapers and loaders for {topic} data", "code", [f"{topic} scraper", f"{topic} data loader"]))
     return Plan(approach, reason, needs, planner="heuristic")
 

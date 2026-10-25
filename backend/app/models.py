@@ -86,3 +86,39 @@ class Asset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     result: Mapped[SearchResult] = relationship(back_populates="assets")
+
+
+class Pipeline(Base):
+    __tablename__ = "pipelines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(200))
+    template: Mapped[str | None] = mapped_column(String(64))
+    graph_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class DatasetVersion(Base):
+    """One pipeline run. Every run produces a new, immutable version."""
+
+    __tablename__ = "dataset_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    pipeline_id: Mapped[int | None] = mapped_column(ForeignKey("pipelines.id", ondelete="SET NULL"))
+    version: Mapped[int] = mapped_column(default=1)
+    # Snapshot of the graph that produced this version, for reproducibility.
+    graph_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # running | done | error
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    schema: Mapped[list] = mapped_column(JSON, default=list)
+    row_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    storage_path: Mapped[str | None] = mapped_column(Text)
+    log: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str | None] = mapped_column(Text)
+    card_md: Mapped[str | None] = mapped_column(Text)
+    export_paths: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

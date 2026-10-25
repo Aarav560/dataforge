@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { api, sourceQueries, type Kind, type Need, type Project } from "@/lib/api";
 
-const KINDS: Kind[] = ["dataset", "model", "environment", "code"];
+const KINDS: Kind[] = ["dataset", "model", "environment", "code", "video", "paper"];
 
 const STATUS_DOT: Record<Need["status"], string> = {
   pending: "bg-zinc-500",

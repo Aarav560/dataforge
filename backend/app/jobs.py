@@ -8,6 +8,7 @@ import hashlib
 import logging
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -15,10 +16,10 @@ from sqlalchemy import delete
 
 from . import ranking
 from .config import Settings, get_settings
-from .connectors import Connector, RawResult, build_connectors
+from .connectors import Connector, LinkRef, RawResult, build_connectors
 from .db import SessionLocal
 from .licensing import classify_license
-from .models import Asset, DataNeed, SearchResult
+from .models import Asset, DataNeed, DatasetVersion, SearchResult
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,34 @@ USER_AGENT = "DataForge/0.1 (+https://github.com/aarav560/dataforge)"
 
 def make_http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=120.0), headers={"User-Agent": USER_AGENT})
+
+
+async def _follow_paper_links(best: dict, connectors: dict[str, Connector], description: str, limit: int) -> list[str]:
+    """Resolve dataset/model/code links found in paper abstracts into results."""
+    papers = sorted((v for v in best.values() if v[0].kind == "paper"), key=lambda v: -v[3])
+    refs: dict[tuple[str, str], tuple[LinkRef, RawResult, float]] = {}
+    for raw, rel, *_ in papers:
+        for link in raw.meta.get("links") or []:
+            ref = LinkRef(**link)
+            key = (ref.source, ref.external_id.lower())
+            if key not in refs and ref.source in connectors and (ref.source, ref.external_id) not in best:
+                refs[key] = (ref, raw, rel)
+    chosen = list(refs.values())[:limit]
+    outcomes = await asyncio.gather(*(connectors[r.source].resolve(r) for r, _, _ in chosen), return_exceptions=True)
+    errors = []
+    for (ref, paper, paper_rel), found in zip(chosen, outcomes):
+        if isinstance(found, BaseException):
+            errors.append(f"{ref.source} link {ref.external_id} from paper: {found}")
+            continue
+        if found is None:
+            continue
+        found.meta["via_paper"] = {"source": paper.source, "id": paper.external_id, "title": paper.title}
+        lic = classify_license(found.license)
+        # Being cited by a relevant paper is itself a relevance signal.
+        rel = max(ranking.relevance(found, description, ""), round(0.8 * paper_rel, 4))
+        qual = ranking.quality(found, lic)
+        best[(found.source, found.external_id)] = (found, rel, qual, ranking.combined(rel, qual), lic)
+    return errors
 
 
 def _dedupe_key(title: str) -> str:
@@ -79,6 +108,8 @@ async def search_need(
                 key = (raw.source, raw.external_id)
                 if key not in best or best[key][3] < score:
                     best[key] = (raw, rel, qual, score, lic)
+
+        errors += await _follow_paper_links(best, connectors, description, settings.max_followed_links)
 
         # Flag likely mirrors: same repo name on different hubs.
         by_name: dict[str, list[tuple[str, str]]] = {}
@@ -211,3 +242,66 @@ async def download_asset(
     finally:
         if own_client:
             await client.aclose()
+
+
+def _project_asset_paths(db, project_id: int) -> dict[int, Path]:
+    from sqlalchemy import select
+
+    rows = db.execute(
+        select(Asset.id, Asset.storage_path)
+        .join(SearchResult)
+        .join(DataNeed)
+        .where(DataNeed.project_id == project_id, Asset.status == "done")
+    ).all()
+    return {aid: Path(path) for aid, path in rows if path}
+
+
+async def run_pipeline(version_id: int, *, settings: Settings | None = None) -> None:
+    import pyarrow.parquet as pq
+
+    from .pipelines import Env, run
+
+    settings = settings or get_settings()
+    out_dir = settings.data_dir / "versions" / str(version_id)
+    lines: list[str] = []
+
+    def log_line(msg: str) -> None:
+        lines.append(msg)
+
+    try:
+        with SessionLocal() as db:
+            version = db.get(DatasetVersion, version_id)
+            if version is None:
+                return
+            graph = version.graph_json
+            asset_paths = _project_asset_paths(db, version.project_id)
+
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True)
+        env = Env(asset_paths=asset_paths, work_dir=out_dir, settings=settings, log=log_line)
+        ctx = await asyncio.to_thread(run, graph, env)
+        if ctx.table is None:
+            raise RuntimeError("pipeline produced no table; end it with a step that outputs rows")
+        path = out_dir / "data.parquet"
+        await asyncio.to_thread(pq.write_table, ctx.table, path)
+
+        with SessionLocal() as db:
+            version = db.get(DatasetVersion, version_id)
+            version.status = "done"
+            version.row_count = ctx.table.num_rows
+            version.schema = [{"name": f.name, "type": str(f.type)} for f in ctx.table.schema]
+            version.storage_path = str(path)
+            version.log = "\n".join(lines)
+            version.finished_at = datetime.now(timezone.utc)
+            db.commit()
+    except Exception as exc:
+        log.warning("run_pipeline %s failed: %s", version_id, exc)
+        shutil.rmtree(out_dir, ignore_errors=True)
+        with SessionLocal() as db:
+            version = db.get(DatasetVersion, version_id)
+            if version is not None:
+                version.status, version.error = "error", str(exc)
+                version.log = "\n".join(lines)
+                version.finished_at = datetime.now(timezone.utc)
+                db.commit()

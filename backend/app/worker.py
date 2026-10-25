@@ -15,6 +15,10 @@ async def download_asset(ctx, asset_id: int) -> None:
     await jobs.download_asset(asset_id, client=ctx["http"])
 
 
+async def run_pipeline(ctx, version_id: int) -> None:
+    await jobs.run_pipeline(version_id)
+
+
 async def startup(ctx) -> None:
     init_db()
     ctx["http"] = jobs.make_http_client()
@@ -25,7 +29,7 @@ async def shutdown(ctx) -> None:
 
 
 class WorkerSettings:
-    functions = [search_need, download_asset]
+    functions = [search_need, download_asset, run_pipeline]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url or "redis://localhost:6379")

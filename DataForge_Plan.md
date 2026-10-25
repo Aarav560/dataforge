@@ -215,10 +215,10 @@ Dense, terminal-meets-mission-control layout. Dark theme, neon accents, monospac
 - Plain UI
 
 ### Phase 2 — Media & synthetic
-- [ ] YouTube search + yt-dlp gathering
-- [ ] Video → frames → state/action pipeline template
-- [ ] Synthetic Data Advisor + generators
-- [ ] arXiv / Semantic Scholar connectors
+- [x] YouTube search + yt-dlp gathering
+- [x] Video → frames → state/action pipeline template
+- [x] Synthetic Data Advisor + generators
+- [x] arXiv / Semantic Scholar connectors
 
 ### Phase 3 — Maximalist UI
 - [ ] Dockable panel layout

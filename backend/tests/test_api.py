@@ -47,7 +47,7 @@ def test_full_flow(connectors):
         project = client.post("/api/projects", json={"goal": "I want to train a Tetris AI"}).json()
         pid = project["id"]
         assert project["approach"] == "reinforcement_learning"
-        assert len(project["needs"]) == 4
+        assert len(project["needs"]) == 6
 
         # Edit the plan before searching.
         code_need = project["needs"][-1]
@@ -155,3 +155,93 @@ _orig_progress = jobs._report_progress
 
 def _fast_progress(asset_id, dest):
     return _orig_progress(asset_id, dest, interval=0.05)
+
+
+def test_paper_links_are_followed(monkeypatch):
+    class Papers(FakeConnector):
+        pass
+
+    paper = raw(
+        "arxiv", "1905.01652", kind="paper", title="Tetris RL", description="tetris reinforcement learning",
+        meta={"links": [{"source": "huggingface", "kind": "dataset", "external_id": "foo/tetris-logs",
+                         "url": "https://huggingface.co/datasets/foo/tetris-logs"}]},
+    )
+
+    class HF(FakeConnector):
+        async def resolve(self, ref):
+            return raw("huggingface", ref.external_id, kind=ref.kind, license="mit")
+
+    fakes = {"arxiv": Papers("arxiv", {"paper"}, [paper]), "semanticscholar": FakeConnector("semanticscholar", {"paper"}),
+             "huggingface": HF("huggingface", {"dataset", "model"})}
+    monkeypatch.setattr(jobs, "build_connectors", lambda client, settings: fakes)
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"goal": "I want to train a Tetris AI"}).json()
+        pid = project["id"]
+        need = next(n for n in project["needs"] if n["kind"] == "paper")
+        client.post(f"/api/projects/{pid}/search", json={"need_ids": [need["id"]]})
+        _wait(client, pid, lambda p: all(n["status"] != "searching" for n in p["needs"]))
+        results = client.get(f"/api/projects/{pid}/results", params={"need_id": need["id"]}).json()
+        followed = next(r for r in results if r["external_id"] == "foo/tetris-logs")
+        assert followed["kind"] == "dataset"
+        assert followed["meta"]["via_paper"]["id"] == "1905.01652"
+        assert followed["relevance"] > 0
+
+
+def _wait_version(client, version_id):
+    for _ in range(300):
+        v = client.get(f"/api/versions/{version_id}").json()
+        if v["status"] != "running":
+            return v
+        asyncio.run(asyncio.sleep(0.05))
+    raise AssertionError("version still running")
+
+
+def test_synthetic_pipeline_flow():
+    with TestClient(app) as client:
+        pid = client.post("/api/projects", json={"goal": "I want to train a Tetris AI"}).json()["id"]
+        advice = client.get(f"/api/projects/{pid}/synthetic").json()
+        assert advice["recommended"] and advice["template"] == "tetris_synthetic"
+
+        templates = {t["id"] for t in client.get("/api/pipeline-templates").json()}
+        assert {"video_state_action", "tetris_synthetic", "arithmetic_synthetic"} <= templates
+        steps = {s["type"]: s for s in client.get("/api/pipeline-steps").json()}
+        assert steps["tetris_synthetic"]["is_source"]
+
+        pipe = client.post(f"/api/projects/{pid}/pipelines", json={"template": "tetris_synthetic"}).json()
+        graph = pipe["graph_json"]
+        graph["nodes"][0]["params"] = {"games": 2, "max_steps": 30}
+        assert client.put(f"/api/pipelines/{pipe['id']}", json={"graph": graph}).status_code == 200
+
+        v1 = client.post(f"/api/pipelines/{pipe['id']}/run").json()
+        v1 = _wait_version(client, v1["id"])
+        assert v1["status"] == "done", v1
+        assert v1["version"] == 1 and v1["row_count"] > 0
+        assert {"name": "state", "type": "list<item: uint8>"} in v1["columns"]
+
+        page = client.get(f"/api/versions/{v1['id']}/rows", params={"offset": 1, "limit": 3}).json()
+        assert page["total"] == v1["row_count"] and len(page["rows"]) == 3
+        assert page["rows"][0]["step"] == 1
+
+        v2 = _wait_version(client, client.post(f"/api/pipelines/{pipe['id']}/run").json()["id"])
+        assert v2["version"] == 2
+        assert [v["version"] for v in client.get(f"/api/projects/{pid}/versions").json()] == [2, 1]
+
+
+def test_invalid_graph_rejected():
+    with TestClient(app) as client:
+        pid = client.post("/api/projects", json={"goal": "tetris"}).json()["id"]
+        bad = {"graph": {"nodes": [{"id": "a", "type": "grid_sample"}], "edges": []}}
+        resp = client.post(f"/api/projects/{pid}/pipelines", json=bad)
+        assert resp.status_code == 422 and "needs an input" in resp.json()["detail"]
+        assert client.post(f"/api/projects/{pid}/pipelines", json={"template": "nope"}).status_code == 404
+
+
+def test_pipeline_failure_recorded():
+    with TestClient(app) as client:
+        pid = client.post("/api/projects", json={"goal": "tetris"}).json()["id"]
+        pipe = client.post(
+            f"/api/projects/{pid}/pipelines", json={"template": "video_state_action", "asset_ids": [12345]}
+        ).json()
+        v = _wait_version(client, client.post(f"/api/pipelines/{pipe['id']}/run").json()["id"])
+        assert v["status"] == "error" and "not downloaded" in v["error"]
+        assert client.get(f"/api/versions/{v['id']}/rows").status_code == 409

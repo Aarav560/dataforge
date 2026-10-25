@@ -36,28 +36,37 @@ class GitHubConnector(Connector):
         for item in resp.json().get("items", []):
             if item.get("private") or (item.get("archived") and item.get("stargazers_count", 0) < 10):
                 continue
-            lic = item.get("license") or {}
-            spdx = lic.get("spdx_id")
-            out.append(
-                RawResult(
-                    source=self.name,
-                    kind=kind,
-                    external_id=item["full_name"],
-                    url=item["html_url"],
-                    title=item["full_name"],
-                    description=item.get("description"),
-                    # GitHub reports repo size in KB.
-                    size_bytes=(item.get("size") or 0) * 1024 or None,
-                    format=item.get("language"),
-                    license=None if spdx in (None, "NOASSERTION") else spdx,
-                    updated_at=parse_dt(item.get("pushed_at") or item.get("updated_at")),
-                    likes=item.get("stargazers_count"),
-                    downloads=item.get("forks_count"),
-                    tags=item.get("topics") or [],
-                    meta={"default_branch": item.get("default_branch"), "archived": item.get("archived")},
-                )
-            )
+            out.append(self._parse(item, kind))
         return out
+
+    async def resolve(self, ref) -> RawResult | None:
+        resp = await self.client.get(f"{API}/repos/{ref.external_id}", headers=self.headers)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        item = resp.json()
+        return None if item.get("private") else self._parse(item, ref.kind)
+
+    def _parse(self, item: dict, kind: str) -> RawResult:
+        lic = item.get("license") or {}
+        spdx = lic.get("spdx_id")
+        return RawResult(
+            source=self.name,
+            kind=kind,
+            external_id=item["full_name"],
+            url=item["html_url"],
+            title=item["full_name"],
+            description=item.get("description"),
+            # GitHub reports repo size in KB.
+            size_bytes=(item.get("size") or 0) * 1024 or None,
+            format=item.get("language"),
+            license=None if spdx in (None, "NOASSERTION") else spdx,
+            updated_at=parse_dt(item.get("pushed_at") or item.get("updated_at")),
+            likes=item.get("stargazers_count"),
+            downloads=item.get("forks_count"),
+            tags=item.get("topics") or [],
+            meta={"default_branch": item.get("default_branch"), "archived": item.get("archived")},
+        )
 
     async def download(self, external_id: str, kind: str, dest: Path, max_bytes: int) -> int:
         slug = external_id.replace("/", "__")

@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 from . import jobqueue
 from .config import get_settings
 from .db import SessionLocal, get_db, init_db
-from .models import Asset, DataNeed, Project, SearchResult
+from .models import Asset, DataNeed, DatasetVersion, Project, SearchResult
 from .planner import make_plan
+from .routes_datasets import router as datasets_router
 from .schemas import (
     AssetOut,
     DownloadRequest,
@@ -36,6 +37,7 @@ def _fail_interrupted_jobs() -> None:
         db.execute(
             update(Asset).where(Asset.status.in_(("queued", "downloading"))).values(status="error", error=msg)
         )
+        db.execute(update(DatasetVersion).where(DatasetVersion.status == "running").values(status="error", error=msg))
         db.commit()
 
 
@@ -49,6 +51,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="DataForge", version="0.1.0", lifespan=lifespan)
+app.include_router(datasets_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
@@ -96,6 +99,7 @@ def health() -> dict:
         "planner": "claude" if settings.anthropic_api_key else "heuristic",
         "queue": "redis" if settings.redis_url else "in-process",
         "kaggle_downloads": bool(settings.kaggle_username and settings.kaggle_key),
+        "youtube": "data-api" if settings.youtube_api_key else "yt-dlp",
     }
 
 

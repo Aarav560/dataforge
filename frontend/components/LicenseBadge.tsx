@@ -5,6 +5,7 @@ const STYLES: Record<LicenseClass, { label: string; cls: string }> = {
   commercial: { label: "commercial OK", cls: "bg-green-500/15 text-green-500 border-green-500/40" },
   non_commercial: { label: "non-commercial", cls: "bg-red-500/15 text-red-400 border-red-500/40" },
   research_only: { label: "research only", cls: "bg-red-500/15 text-red-400 border-red-500/40" },
+  local_only: { label: "local use only", cls: "bg-red-500/15 text-red-400 border-red-500/40" },
   unknown: { label: "check license", cls: "bg-amber-500/15 text-amber-500 border-amber-500/40" },
 };
 

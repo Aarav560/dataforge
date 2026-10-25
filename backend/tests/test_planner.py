@@ -8,7 +8,7 @@ def test_heuristic_tetris_plan():
     plan = planner.plan_heuristic("I want to train a Tetris AI")
     assert plan.approach == "reinforcement_learning"
     kinds = [n.kind for n in plan.needs]
-    assert kinds == ["dataset", "model", "environment", "code"]
+    assert kinds == ["dataset", "model", "environment", "video", "paper", "code"]
     assert all("tetris" in q.lower() for n in plan.needs for q in n.queries)
     assert plan.needs[0].source_queries().keys() == {"huggingface", "kaggle", "github"}
 
@@ -16,7 +16,8 @@ def test_heuristic_tetris_plan():
 def test_heuristic_supervised():
     plan = planner.plan_heuristic("classify bird species from photos")
     assert plan.approach == "supervised"
-    assert not any(n.kind == "environment" for n in plan.needs)
+    assert not any(n.kind in ("environment", "video") for n in plan.needs)
+    assert [n for n in plan.needs if n.kind == "paper"][0].source_queries().keys() == {"arxiv", "semanticscholar"}
 
 
 async def test_no_key_uses_heuristic():
@@ -39,7 +40,7 @@ async def test_claude_plan_parsed(monkeypatch):
         text = (
             '{"approach":"imitation_learning","approach_reason":"r","needs":['
             '{"description":"Logged games","kind":"dataset","queries":["tetris games"," "]},'
-            '{"description":"bad","kind":"paper","queries":["x"]}]}'
+            '{"description":"bad","kind":"forum","queries":["x"]}]}'
         )
 
     class Resp:

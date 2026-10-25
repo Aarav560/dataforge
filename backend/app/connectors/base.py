@@ -1,3 +1,4 @@
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,6 +43,42 @@ class Connector(ABC):
     @abstractmethod
     async def download(self, external_id: str, kind: str, dest: Path, max_bytes: int) -> int:
         """Download into `dest` (a directory). Returns bytes written."""
+
+    async def resolve(self, ref: "LinkRef") -> RawResult | None:
+        """Look up a single resource linked from elsewhere (e.g. a paper)."""
+        return None
+
+
+@dataclass(frozen=True)
+class LinkRef:
+    source: str
+    kind: str
+    external_id: str
+    url: str
+
+
+_LINK_PATTERNS = [
+    (re.compile(r"huggingface\.co/datasets/([\w.-]+/[\w.-]+)"), "huggingface", "dataset"),
+    (re.compile(r"huggingface\.co/(?!datasets/|spaces/|papers/|docs/)([\w.-]+/[\w.-]+)"), "huggingface", "model"),
+    (re.compile(r"kaggle\.com/datasets/([\w.-]+/[\w.-]+)"), "kaggle", "dataset"),
+    (re.compile(r"github\.com/([\w.-]+/[\w.-]+)"), "github", "code"),
+]
+
+
+def extract_links(text: str | None) -> list[LinkRef]:
+    """Find dataset/model/code links in free text such as paper abstracts."""
+    if not text:
+        return []
+    found: dict[tuple[str, str], LinkRef] = {}
+    for pattern, source, kind in _LINK_PATTERNS:
+        for m in pattern.finditer(text):
+            ext = m.group(1).rstrip(".").removesuffix(".git")
+            key = (source, ext.lower())
+            if key not in found:
+                prefix = {"huggingface": "https://huggingface.co/" + ("datasets/" if kind == "dataset" else ""),
+                          "kaggle": "https://www.kaggle.com/datasets/", "github": "https://github.com/"}[source]
+                found[key] = LinkRef(source, kind, ext, prefix + ext)
+    return list(found.values())
 
 
 def parse_dt(value: str | None) -> datetime | None:

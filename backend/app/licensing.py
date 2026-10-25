@@ -1,6 +1,8 @@
 """Map free-form license strings to usage classes.
 
-Classes: commercial (OK for commercial use), non_commercial, research_only, unknown.
+Classes: commercial (OK for commercial use), non_commercial, research_only,
+local_only (may be used locally but not redistributed, e.g. YouTube's
+standard license), unknown.
 """
 
 import re
@@ -8,6 +10,7 @@ import re
 COMMERCIAL = "commercial"
 NON_COMMERCIAL = "non_commercial"
 RESEARCH_ONLY = "research_only"
+LOCAL_ONLY = "local_only"
 UNKNOWN = "unknown"
 
 _COMMERCIAL_IDS = {
@@ -29,6 +32,8 @@ def classify_license(license_: str | None) -> str:
     raw = license_.strip().lower()
     if raw in {"unknown", "other", "none", "noassertion", ""}:
         return UNKNOWN
+    if "youtube standard" in raw:
+        return LOCAL_ONLY
     if any(h in raw for h in _RESEARCH_HINTS):
         return RESEARCH_ONLY
     # NC anywhere in a Creative Commons string, or spelled out.

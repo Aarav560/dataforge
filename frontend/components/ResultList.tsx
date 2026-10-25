@@ -29,6 +29,10 @@ export function ResultList({ results, selected, downloaded, onToggle }: Props) {
                 onChange={() => onToggle(r.id)}
                 aria-label={`Select ${r.title}`}
               />
+              {r.meta.thumbnail && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={r.meta.thumbnail} alt="" className="h-14 w-24 shrink-0 rounded object-cover" />
+              )}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <a href={r.url} target="_blank" rel="noreferrer" className="mono text-sm font-medium hover:underline break-all">
@@ -54,6 +58,12 @@ export function ResultList({ results, selected, downloaded, onToggle }: Props) {
                     {r.updated_at && <>· {new Date(r.updated_at).toLocaleDateString()}</>}
                   </span>
                 </div>
+                {r.meta.via_paper && (
+                  <div className="mt-1 text-[11px] text-sky-400">found via paper: {r.meta.via_paper.title}</div>
+                )}
+                {r.license_class === "local_only" && (
+                  <div className="mt-1 text-[11px] text-red-400">Local use only: don&apos;t redistribute this media or datasets built from it.</div>
+                )}
                 {r.meta.possible_mirrors?.length ? (
                   <div className="mt-1 text-[11px] text-amber-500">
                     possible duplicate of {r.meta.possible_mirrors.join(", ")}

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AssetPanel } from "@/components/AssetPanel";
+import { DatasetsPanel } from "@/components/DatasetsPanel";
 import { PlanTree } from "@/components/PlanTree";
 import { ResultList } from "@/components/ResultList";
 import { api, type Asset, type Health, type Project, type ProjectSummary, type Result } from "@/lib/api";
@@ -174,7 +175,7 @@ export default function Home() {
           </p>
         </section>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[320px_1fr_260px]">
+        <div className="grid gap-4 lg:grid-cols-[300px_1fr_360px]">
           <aside className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold">Plan</h2>
@@ -201,12 +202,16 @@ export default function Home() {
                 <option value="huggingface">huggingface</option>
                 <option value="kaggle">kaggle</option>
                 <option value="github">github</option>
+                <option value="youtube">youtube</option>
+                <option value="arxiv">arxiv</option>
+                <option value="semanticscholar">semanticscholar</option>
               </select>
               <select className="input" value={licenseFilter} onChange={(e) => setLicenseFilter(e.target.value)}>
                 <option value="">any license</option>
                 <option value="commercial">commercial OK</option>
                 <option value="non_commercial">non-commercial</option>
                 <option value="research_only">research only</option>
+                <option value="local_only">local use only</option>
                 <option value="unknown">unknown</option>
               </select>
               <button className="btn btn-primary ml-auto" disabled={selected.size === 0} onClick={downloadSelected}>
@@ -216,8 +221,9 @@ export default function Home() {
             <ResultList results={results} selected={selected} downloaded={downloaded} onToggle={toggle} />
           </section>
 
-          <aside>
+          <aside className="flex flex-col gap-3">
             <AssetPanel assets={assets} />
+            <DatasetsPanel projectId={project.id} assets={assets} onError={setError} />
             {health && !health.kaggle_downloads && (
               <p className="mt-2 text-[11px] muted">Kaggle downloads need KAGGLE_USERNAME and KAGGLE_KEY on the backend.</p>
             )}

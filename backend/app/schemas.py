@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .planner import KIND_SOURCES
 
-Kind = Literal["dataset", "model", "environment", "code"]
+Kind = Literal["dataset", "model", "environment", "code", "video", "paper"]
 
 
 class ProjectCreate(BaseModel):

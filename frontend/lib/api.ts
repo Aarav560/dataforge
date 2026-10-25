@@ -1,5 +1,5 @@
-export type Kind = "dataset" | "model" | "environment" | "code";
-export type LicenseClass = "commercial" | "non_commercial" | "research_only" | "unknown";
+export type Kind = "dataset" | "model" | "environment" | "code" | "video" | "paper";
+export type LicenseClass = "commercial" | "non_commercial" | "research_only" | "local_only" | "unknown";
 
 export interface Need {
   id: number;
@@ -40,7 +40,17 @@ export interface Result {
   relevance: number;
   quality: number;
   score: number;
-  meta: { possible_mirrors?: string[]; gated?: boolean; downloads?: number; likes?: number };
+  meta: {
+    possible_mirrors?: string[];
+    gated?: boolean;
+    downloads?: number;
+    likes?: number;
+    thumbnail?: string;
+    channel?: string;
+    authors?: string[];
+    via_paper?: { source: string; id: string; title: string };
+    links?: { source: string; kind: string; external_id: string; url: string }[];
+  };
   updated_at: string | null;
 }
 
@@ -55,6 +65,85 @@ export interface Asset {
   status: "queued" | "downloading" | "done" | "error";
   error: string | null;
   created_at: string;
+}
+
+export interface Advice {
+  recommended: boolean;
+  category: string | null;
+  reason: string;
+  generator: string | null;
+  template: string | null;
+  scaffold: string | null;
+  source: string;
+}
+
+export interface Template {
+  id: string;
+  label: string;
+  description: string;
+  needs_assets: boolean;
+}
+
+export interface GraphNode {
+  id: string;
+  type: string;
+  params?: Record<string, unknown>;
+}
+
+export interface Graph {
+  nodes: GraphNode[];
+  edges: { source: string; target: string }[];
+  layout?: Record<string, { x: number; y: number }>;
+}
+
+export interface StepParam {
+  type: string;
+  default: unknown;
+  help: string;
+  choices: string[] | null;
+  required: boolean;
+}
+
+export interface StepDef {
+  type: string;
+  label: string;
+  category: string;
+  description: string;
+  is_source: boolean;
+  params: Record<string, StepParam>;
+}
+
+export interface Pipeline {
+  id: number;
+  project_id: number;
+  name: string;
+  template: string | null;
+  graph_json: Graph;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Version {
+  id: number;
+  project_id: number;
+  pipeline_id: number | null;
+  version: number;
+  status: "running" | "done" | "error";
+  columns: { name: string; type: string }[];
+  row_count: number;
+  log: string;
+  error: string | null;
+  card_md: string | null;
+  export_paths: Record<string, string>;
+  graph_json: Graph;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface Rows {
+  total: number;
+  offset: number;
+  rows: Record<string, unknown>[];
 }
 
 export interface Health {
@@ -103,6 +192,20 @@ export const api = {
       body: JSON.stringify({ result_ids: resultIds }),
     }),
   assets: (projectId: number) => call<Asset[]>(`/projects/${projectId}/assets`),
+  advice: (projectId: number, refresh = false) =>
+    call<Advice>(`/projects/${projectId}/synthetic${refresh ? "?refresh=true" : ""}`),
+  templates: () => call<Template[]>("/pipeline-templates"),
+  steps: () => call<StepDef[]>("/pipeline-steps"),
+  pipelines: (projectId: number) => call<Pipeline[]>(`/projects/${projectId}/pipelines`),
+  createPipeline: (projectId: number, body: { template?: string; asset_ids?: number[]; graph?: Graph; name?: string }) =>
+    call<Pipeline>(`/projects/${projectId}/pipelines`, { method: "POST", body: JSON.stringify(body) }),
+  updatePipeline: (id: number, body: { name?: string; graph?: Graph }) =>
+    call<Pipeline>(`/pipelines/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deletePipeline: (id: number) => call<void>(`/pipelines/${id}`, { method: "DELETE" }),
+  runPipeline: (id: number) => call<Version>(`/pipelines/${id}/run`, { method: "POST" }),
+  versions: (projectId: number) => call<Version[]>(`/projects/${projectId}/versions`),
+  rows: (versionId: number, offset = 0, limit = 50) =>
+    call<Rows>(`/versions/${versionId}/rows?offset=${offset}&limit=${limit}`),
 };
 
 export function formatBytes(n: number | null | undefined): string {

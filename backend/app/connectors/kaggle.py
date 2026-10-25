@@ -46,6 +46,13 @@ class KaggleConnector(Connector):
             )
         return out
 
+    async def resolve(self, ref) -> RawResult | None:
+        slug = ref.external_id.split("/")[-1]
+        for r in await self.search(slug.replace("-", " "), "dataset", 20):
+            if r.external_id.lower() == ref.external_id.lower():
+                return r
+        return RawResult(source=self.name, kind="dataset", external_id=ref.external_id, url=ref.url, title=ref.external_id)
+
     async def download(self, external_id: str, kind: str, dest: Path, max_bytes: int) -> int:
         if self.auth is None:
             raise RuntimeError("Kaggle downloads need KAGGLE_USERNAME and KAGGLE_KEY")

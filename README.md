@@ -2,13 +2,21 @@
 
 Turn a plain-language ML goal ("I want to train a Tetris AI") into a ready-to-train dataset. See [DataForge_Plan.md](DataForge_Plan.md) for the full product plan.
 
-This repository implements **Phase 1 (MVP)** of the roadmap:
+Implemented so far:
 
+**Phase 1: core loop**
 - Next.js frontend + FastAPI backend, Postgres, Redis job queue
 - Planner: goal → ML approach → data needs → search queries per source (Claude when `ANTHROPIC_API_KEY` is set, keyword heuristic otherwise)
 - Connectors: Hugging Face (datasets + models), Kaggle, GitHub, searched in parallel
 - Ranked results with relevance/quality scores, license badges and mirror detection
 - Download selected results through background workers
+
+**Phase 2: media and synthetic data**
+- YouTube search (Data API or yt-dlp) and yt-dlp downloads; YouTube's standard license is flagged *local use only*
+- arXiv and Semantic Scholar connectors; dataset/model/code links in abstracts are resolved and added as results
+- Pipeline engine (DAG of steps) with a *video → state/action* template: frame sampling, PySceneDetect scene filtering, playfield detection, grid sampling, action inference
+- Synthetic Data Advisor (rules, refined by Claude when available) with built-in Tetris and arithmetic generators, or a generator scaffold script for other domains
+- Every pipeline run is a new dataset version (Parquet), previewable in the UI
 
 ## Layout
 
@@ -16,10 +24,13 @@ This repository implements **Phase 1 (MVP)** of the roadmap:
 backend/            FastAPI app, arq worker, tests
   app/main.py       REST API
   app/planner.py    goal → plan (Claude structured output / heuristic fallback)
-  app/connectors/   huggingface.py, kaggle.py, github.py
+  app/connectors/   huggingface, kaggle, github, youtube, arxiv, semanticscholar
   app/ranking.py    relevance + quality scoring
   app/licensing.py  license string → commercial / non_commercial / research_only / unknown
-  app/jobs.py       search fan-out and download jobs
+  app/jobs.py       search fan-out, download and pipeline jobs
+  app/pipelines/    engine.py (DAG executor), steps.py, video.py, templates.py
+  app/synthetic/    tetris.py (engine + agents), render.py, advisor.py
+  app/routes_datasets.py  pipelines, versions, synthetic advice
   app/worker.py     arq worker entry point
 frontend/           Next.js (App Router) UI; proxies /api/* to the backend
 docker-compose.yml  Postgres (pgvector) + Redis
@@ -56,6 +67,8 @@ npm run dev                      # http://localhost:3000
 | `GITHUB_TOKEN` | Raises GitHub search rate limits (unauthenticated search allows 10 requests/min) |
 | `KAGGLE_USERNAME`, `KAGGLE_KEY` | Required for Kaggle downloads (search works without) |
 | `HF_TOKEN` | Access to gated Hugging Face repos |
+| `YOUTUBE_API_KEY` | Use the YouTube Data API for search (yt-dlp is used otherwise) |
+| `S2_API_KEY` | Semantic Scholar key; unauthenticated calls are rate-limited hard |
 | `DATA_DIR` | Where downloads land (default `backend/data`) |
 | `MAX_DOWNLOAD_BYTES` | Per-asset download cap (default 5 GiB) |
 
@@ -71,6 +84,13 @@ npm run dev                      # http://localhost:3000
 | `GET` | `/api/projects/{id}/results` | ranked results; filters `need_id`, `source`, `license_class` |
 | `POST` | `/api/projects/{id}/downloads` | `{result_ids}` → queued assets |
 | `GET` | `/api/projects/{id}/assets` | download status |
+| `GET` | `/api/pipeline-steps`, `/api/pipeline-templates` | step catalog and templates |
+| `POST` | `/api/projects/{id}/pipelines` | `{template, asset_ids}` or `{graph}` |
+| `GET`/`PUT`/`DELETE` | `/api/pipelines/{id}` | read / edit graph / delete |
+| `POST` | `/api/pipelines/{id}/run` | run → new dataset version |
+| `GET` | `/api/projects/{id}/versions`, `/api/versions/{id}` | versions |
+| `GET` | `/api/versions/{id}/rows` | paged rows (`offset`, `limit`) |
+| `GET` | `/api/projects/{id}/synthetic` | synthetic-data advice (`?refresh=true`) |
 
 ## Tests
 
@@ -81,4 +101,6 @@ cd frontend && npm run typecheck && npm run build
 
 ## Not yet built
 
-Everything from Phase 2 onward: YouTube/arXiv connectors, transform pipelines, synthetic data, the maximalist dockable UI with WebSocket streaming, versioning, dataset cards, export formats, and auth (Clerk / Auth.js). The `projects.user_id` column is in place for auth, but the API is currently single-user and unauthenticated, so don't expose it publicly.
+Phases 3–5: the maximalist dockable UI with WebSocket streaming, diffs between versions, dataset cards, export formats, pre-indexing and semantic cache, auto-labeling, and auth (Clerk / Auth.js).
+
+The video template is tuned for clean, high-contrast footage. For real broadcasts, set a manual playfield box on the *Detect board* step if auto-detection fails. The `projects.user_id` column is in place for auth, but the API is currently single-user and unauthenticated, so don't expose it publicly.

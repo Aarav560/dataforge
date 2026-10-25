@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timezone
 
 from .connectors.base import RawResult
-from .licensing import COMMERCIAL, NON_COMMERCIAL, RESEARCH_ONLY
+from .licensing import COMMERCIAL, LOCAL_ONLY, NON_COMMERCIAL, RESEARCH_ONLY
 
 _STOP = {
     "a", "an", "and", "the", "of", "for", "to", "in", "on", "with", "i", "want", "train", "build",
@@ -17,7 +17,7 @@ _STOP = {
     "by", "or", "be", "can", "this", "it", "as", "at", "existing", "pretrained",
 }
 
-_LICENSE_WEIGHT = {COMMERCIAL: 1.0, NON_COMMERCIAL: 0.7, RESEARCH_ONLY: 0.6}
+_LICENSE_WEIGHT = {COMMERCIAL: 1.0, NON_COMMERCIAL: 0.7, RESEARCH_ONLY: 0.6, LOCAL_ONLY: 0.5}
 
 
 def tokenize(text: str | None) -> set[str]:

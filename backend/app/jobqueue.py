@@ -8,7 +8,7 @@ from . import jobs
 
 log = logging.getLogger(__name__)
 
-_JOBS = {"search_need": jobs.search_need, "download_asset": jobs.download_asset}
+_JOBS = {"search_need": jobs.search_need, "download_asset": jobs.download_asset, "run_pipeline": jobs.run_pipeline}
 _pool = None
 _background: set[asyncio.Task] = set()
 
