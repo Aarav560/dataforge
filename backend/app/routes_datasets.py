@@ -49,11 +49,13 @@ class VersionOut(BaseModel):
     id: int
     project_id: int
     pipeline_id: int | None
+    parent_version_id: int | None
     version: int
     status: str
     # Stored as `schema`; renamed to avoid shadowing BaseModel.schema.
     columns: list = Field(validation_alias="schema")
     row_count: int
+    stats: dict
     log: str
     error: str | None
     card_md: str | None
@@ -232,3 +234,57 @@ async def synthetic_advice(project_id: int, refresh: bool = False, db: Session =
         project.plan_json = plan
         db.commit()
     return plan["synthetic"]
+
+
+def _done_path(version: DatasetVersion):
+    from pathlib import Path
+
+    if version.status != "done" or not version.storage_path:
+        raise HTTPException(409, f"version v{version.version} is {version.status}")
+    return Path(version.storage_path)
+
+
+@router.get("/versions/{version_id}/diff")
+def version_diff(version_id: int, against: int | None = None, db: Session = Depends(get_db)) -> dict:
+    """Diff against `against`, else the parent version, else the previous version of the project."""
+    from .analytics import diff
+
+    version = _version(db, version_id)
+    if against is not None:
+        base = _version(db, against)
+        if base.project_id != version.project_id:
+            raise HTTPException(400, "versions belong to different projects")
+    elif version.parent_version_id:
+        base = _version(db, version.parent_version_id)
+    else:
+        base = db.scalar(
+            select(DatasetVersion)
+            .where(DatasetVersion.project_id == version.project_id, DatasetVersion.version < version.version,
+                   DatasetVersion.status == "done")
+            .order_by(DatasetVersion.version.desc())
+        )
+        if base is None:
+            raise HTTPException(404, "no earlier version to compare with")
+    result = diff(_done_path(base), _done_path(version))
+    result["base"] = {"id": base.id, "version": base.version}
+    result["target"] = {"id": version.id, "version": version.version}
+    return jsonable(result)
+
+
+def jsonable(value):
+    if isinstance(value, dict):
+        return {k: jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v) for v in value]
+    return _jsonable(value) if isinstance(value, (bytes, datetime)) else value
+
+
+@router.post("/versions/{version_id}/card", response_model=VersionOut)
+async def regenerate_card(version_id: int, db: Session = Depends(get_db)):
+    from .cards import build_card
+
+    version = _version(db, version_id)
+    _done_path(version)
+    version.card_md = await build_card(db, version, get_settings())
+    db.commit()
+    return version

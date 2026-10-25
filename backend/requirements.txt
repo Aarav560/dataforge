@@ -12,3 +12,5 @@ numpy==2.5.4
 opencv-python-headless==5.0.0.93
 pyarrow==26.0.0
 scenedetect==0.7.2
+duckdb==2.0.0
+pillow==13.0.0

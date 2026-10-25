@@ -259,3 +259,30 @@ def test_queue_unavailable_returns_503(monkeypatch):
         assert resp.status_code == 503 and "queue unavailable" in resp.json()["detail"]
         needs = client.get(f"/api/projects/{pid}").json()["needs"]
         assert all(n["status"] == "error" for n in needs)
+
+
+def test_version_stats_card_and_diff():
+    with TestClient(app) as client:
+        pid = client.post("/api/projects", json={"goal": "solve arithmetic"}).json()["id"]
+        graph = {"nodes": [{"id": "n1", "type": "arithmetic_synthetic", "params": {"count": 200, "operators": "+"}},
+                           {"id": "n2", "type": "split", "params": {"seed": 1}}],
+                 "edges": [{"source": "n1", "target": "n2"}]}
+        pipe = client.post(f"/api/projects/{pid}/pipelines", json={"graph": graph}).json()
+        v1 = _wait_version(client, client.post(f"/api/pipelines/{pipe['id']}/run").json()["id"])
+        assert v1["status"] == "done", v1
+        split = next(c for c in v1["stats"]["columns"] if c["name"] == "split")
+        assert {t["value"] for t in split["top"]} == {"train", "val", "test"}
+        card = v1["card_md"]
+        assert "## Splits" in card and "Synthetic arithmetic" in card and "simulated data" in card
+
+        assert client.get(f"/api/versions/{v1['id']}/diff").status_code == 404  # nothing earlier
+
+        graph["nodes"][0]["params"]["count"] = 250
+        client.put(f"/api/pipelines/{pipe['id']}", json={"graph": graph})
+        v2 = _wait_version(client, client.post(f"/api/pipelines/{pipe['id']}/run").json()["id"])
+        d = client.get(f"/api/versions/{v2['id']}/diff").json()
+        assert d["base"]["version"] == 1 and d["rows"]["delta"] == 50
+        assert d["rows"]["added"] >= 50
+
+        regen = client.post(f"/api/versions/{v1['id']}/card").json()
+        assert regen["card_md"].startswith("---")

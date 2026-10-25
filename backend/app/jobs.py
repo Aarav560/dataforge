@@ -311,6 +311,26 @@ async def download_asset(
             await client.aclose()
 
 
+async def finalize_version(version_id: int, settings: Settings) -> None:
+    """Compute stats and the dataset card, then mark the version done."""
+    from .analytics import compute_stats
+    from .cards import build_card
+
+    with SessionLocal() as db:
+        version = db.get(DatasetVersion, version_id)
+        path = Path(version.storage_path)
+    stats = await asyncio.to_thread(compute_stats, path)
+    with SessionLocal() as db:
+        version = db.get(DatasetVersion, version_id)
+        version.stats = stats
+        db.commit()
+        card = await build_card(db, version, settings)
+        version.card_md = card
+        version.status = "done"
+        version.finished_at = datetime.now(timezone.utc)
+        db.commit()
+
+
 def _project_asset_paths(db, project_id: int) -> dict[int, Path]:
     rows = db.execute(
         select(Asset.id, Asset.storage_path)
@@ -361,14 +381,14 @@ async def run_pipeline(version_id: int, *, settings: Settings | None = None) -> 
 
         with SessionLocal() as db:
             version = db.get(DatasetVersion, version_id)
-            version.status = "done"
             version.row_count = ctx.table.num_rows
             version.schema = [{"name": f.name, "type": str(f.type)} for f in ctx.table.schema]
             version.storage_path = str(path)
             version.log = "\n".join(lines)
-            version.finished_at = datetime.now(timezone.utc)
             db.commit()
-            rows = version.row_count
+        await finalize_version(version_id, settings)
+        with SessionLocal() as db:
+            rows = db.get(DatasetVersion, version_id).row_count
         events.publish(project_id, "version_done", version_id=version_id, rows=rows)
     except Exception as exc:
         log.warning("run_pipeline %s failed: %s", version_id, exc)

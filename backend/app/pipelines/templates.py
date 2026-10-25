@@ -28,6 +28,39 @@ TEMPLATES = {
         "needs_assets": False,
         "graph": lambda asset_ids: linear(("arithmetic_synthetic", {})),
     },
+    "web_text_corpus": {
+        "label": "Web pages → text corpus",
+        "description": "Crawl pages (robots.txt-aware), extract text, scrub PII, dedupe and chunk.",
+        "needs_assets": False,
+        "graph": lambda asset_ids: linear(
+            ("crawl_pages", {"urls": "https://en.wikipedia.org/wiki/Tetris", "max_pages": 5}),
+            ("pii_scrub", {"columns": "text"}),
+            ("dedupe", {"columns": "text"}),
+            ("chunk_text", {}),
+        ),
+    },
+    "images_labeled": {
+        "label": "Images → labeled classification set",
+        "description": "Index images from downloads, label by folder, drop unlabeled, stratified split.",
+        "needs_assets": True,
+        "graph": lambda asset_ids: linear(
+            ("load_images", {"asset_ids": asset_ids}),
+            ("clean", {"required": "label"}),
+            ("split", {"stratify": "label"}),
+        ),
+    },
+    "csv_unified": {
+        "label": "Multiple CSVs → unified table",
+        "description": "Stack table files from downloads into one table, clean, dedupe and split.",
+        "needs_assets": True,
+        "graph": lambda asset_ids: linear(
+            ("assets", {"asset_ids": asset_ids}),
+            ("load_tables", {}),
+            ("clean", {}),
+            ("dedupe", {}),
+            ("split", {}),
+        ),
+    },
 }
 
 

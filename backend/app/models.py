@@ -108,6 +108,8 @@ class DatasetVersion(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     pipeline_id: Mapped[int | None] = mapped_column(ForeignKey("pipelines.id", ondelete="SET NULL"))
+    # Versions derived from another one (e.g. applied label reviews) point at it.
+    parent_version_id: Mapped[int | None] = mapped_column(ForeignKey("dataset_versions.id", ondelete="SET NULL"))
     version: Mapped[int] = mapped_column(default=1)
     # Snapshot of the graph that produced this version, for reproducibility.
     graph_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -115,6 +117,7 @@ class DatasetVersion(Base):
     status: Mapped[str] = mapped_column(String(16), default="running")
     schema: Mapped[list] = mapped_column(JSON, default=list)
     row_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    stats: Mapped[dict] = mapped_column(JSON, default=dict)
     storage_path: Mapped[str | None] = mapped_column(Text)
     log: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str | None] = mapped_column(Text)
