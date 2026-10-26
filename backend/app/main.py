@@ -164,7 +164,17 @@ def health() -> dict:
 async def create_project(body: ProjectCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     if body.team_id is not None:
         require_team_role(db, user, body.team_id, "editor")
-    plan = await make_plan(body.goal.strip(), get_settings())
+    if body.plan is not None:
+        from .planner import Plan, PlannedNeed
+
+        plan = Plan(
+            body.plan.approach, body.plan.approach_reason,
+            [PlannedNeed(n.description.strip(), n.kind, [q.strip() for q in n.queries if q.strip()][:3] or [n.description])
+             for n in body.plan.needs],
+            planner="provided",
+        )
+    else:
+        plan = await make_plan(body.goal.strip(), get_settings())
     project = Project(goal=body.goal.strip(), approach=plan.approach, plan_json=plan.to_json(), planner=plan.planner,
                       owner_id=user.id, team_id=body.team_id)
     for n in plan.needs:

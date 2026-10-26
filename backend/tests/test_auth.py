@@ -132,3 +132,11 @@ def test_bearer_token(auth_on):
     with TestClient(app) as anon:
         assert anon.get("/api/projects", headers={"Authorization": f"Bearer {token}"}).status_code == 200
         assert anon.get("/api/projects", headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
+def test_issue_connector_token(auth_on):
+    with TestClient(app) as c:
+        c.post("/api/auth/signup", json={"email": "bot@x.io", "password": "correct horse battery"})
+        token = c.post("/api/auth/token").json()["token"]
+    with TestClient(app) as anon:
+        assert anon.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).json()["email"] == "bot@x.io"

@@ -8,9 +8,24 @@ from .planner import KIND_SOURCES
 Kind = Literal["dataset", "model", "environment", "code", "video", "paper"]
 
 
+class PlannedNeedIn(BaseModel):
+    description: str = Field(min_length=1, max_length=1000)
+    kind: Kind = "dataset"
+    queries: list[str] = Field(min_length=1, max_length=5)
+
+
+class PlanIn(BaseModel):
+    """A plan written by the caller (e.g. Claude via the connector) instead of the built-in planner."""
+
+    approach: Literal["supervised", "reinforcement_learning", "imitation_learning", "self_supervised", "unsupervised"]
+    approach_reason: str = Field(default="", max_length=2000)
+    needs: list[PlannedNeedIn] = Field(min_length=1, max_length=12)
+
+
 class ProjectCreate(BaseModel):
     goal: str = Field(min_length=3, max_length=2000)
     team_id: int | None = None
+    plan: PlanIn | None = None
 
 
 class NeedIn(BaseModel):

@@ -6,6 +6,7 @@ import { SOURCE_COLORS } from "./CrawlFeed";
 
 export function SourcesPanel() {
   const [sources, setSources] = useState<SourceInfo[]>([]);
+  const [token, setToken] = useState<string | null>(null);
   useEffect(() => {
     api.sources().then(setSources).catch(() => setSources([]));
   }, []);
@@ -31,6 +32,22 @@ export function SourcesPanel() {
         Add a Python file defining a <span className="mono">Connector</span> subclass to the <span className="mono">plugins/</span> folder (see
         <span className="mono"> plugins/zenodo.py</span>) or install a package with a <span className="mono">dataforge.connectors</span> entry point, then restart the backend.
       </p>
+      <div className="panel mt-2 p-2">
+        <div className="uppercase tracking-wide muted">Use DataForge from Claude</div>
+        <p className="mt-1 muted">
+          Add DataForge as a connector in Claude Desktop or Claude Code (see the README). With sign-in enabled, give the connector a
+          token as <span className="mono">DATAFORGE_TOKEN</span>; it acts as you.
+        </p>
+        <button className="btn mt-1" onClick={() => api.connectorToken().then((t) => setToken(t.token)).catch(() => setToken(null))}>
+          Create connector token
+        </button>
+        {token && (
+          <div className="mt-1">
+            <code className="block break-all rounded bg-black/40 p-1 mono">{token}</code>
+            <span className="muted">Shown once. Treat it like a password.</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

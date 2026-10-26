@@ -43,6 +43,9 @@ Implemented so far:
 - Train a baseline: a quick scikit-learn model on any dataset version (numeric, vector, categorical, TF-IDF text or pixel features), scored against a trivial predictor, with leakage-prone columns pre-excluded; metrics, confusion matrix and the model file
 - Alembic migrations, applied at startup
 
+**Claude connector**
+- An MCP server (`backend/app/mcp_server.py`) so Claude Desktop and Claude Code can drive DataForge on your Claude plan; see [Use DataForge from Claude](#use-dataforge-from-claude-connector)
+
 ## Layout
 
 ```
@@ -55,6 +58,7 @@ backend/            FastAPI app, arq worker, tests
   app/auth.py       sessions, passwords, project access (app/routes_auth.py: sign-in, teams, sharing)
   app/plugins.py    connector plugin loader
   app/baseline.py   train-a-baseline
+  app/mcp_server.py Claude connector (MCP server over stdio or HTTP)
   app/jobs.py       search fan-out, download and pipeline jobs
   app/pipelines/    engine.py (DAG executor), steps*.py, video.py, templates.py
   app/synthetic/    tetris.py (engine + agents), render.py, advisor.py
@@ -159,6 +163,9 @@ The browser connects to the backend's WebSocket directly (`ws://<host>:8000` by 
 | `GET` | `/api/versions/{id}/baseline-options` | target candidates and suggested exclusions |
 | `POST`/`GET` | `/api/versions/{id}/baselines` | `{target, exclude}` train / list runs |
 | `GET` | `/api/baselines/{id}/model` | trained model (joblib) |
+| `POST` | `/api/auth/token` | bearer token for scripts and the Claude connector |
+| `PUT` | `/api/versions/{id}/card` | `{summary, limitations}` written by the caller |
+| `POST` | `/api/projects` with `plan` | create a project from a caller-written plan (skips the planner) |
 
 ## Tests
 
@@ -166,6 +173,39 @@ The browser connects to the backend's WebSocket directly (`ws://<host>:8000` by 
 cd backend && .venv/bin/python -m pytest
 cd frontend && npm run typecheck && npm run build
 ```
+
+## Use DataForge from Claude (connector)
+
+DataForge ships an MCP server, so Claude can drive it from Claude Desktop or Claude Code on your normal Claude plan, with no API key. Claude does the reasoning (writing the plan, choosing results, labeling, writing the dataset card), and DataForge does the data work through 29 tools: projects and needs, search, results and previews, license matrix, downloads, synthetic advice, pipelines, versions, rows, diffs, review queue and labels, cards, exports and baselines. Image rows in the review queue are sent as images, so Claude can label them by looking.
+
+Start the backend first. The connector talks to it at `DATAFORGE_URL` (default `http://localhost:8000`).
+
+**Claude Desktop**: add this to `claude_desktop_config.json` (Settings → Developer → Edit config), using absolute paths:
+
+```json
+{
+  "mcpServers": {
+    "dataforge": {
+      "command": "/path/to/dataforge/backend/.venv/bin/python",
+      "args": ["/path/to/dataforge/backend/app/mcp_server.py"],
+      "env": { "DATAFORGE_URL": "http://localhost:8000" }
+    }
+  }
+}
+```
+
+**Claude Code**:
+
+```bash
+claude mcp add dataforge --env DATAFORGE_URL=http://localhost:8000 -- \
+  /path/to/dataforge/backend/.venv/bin/python /path/to/dataforge/backend/app/mcp_server.py
+```
+
+Then ask, for example: *"Use DataForge to plan a dataset for a Tetris AI, search for it, pick the commercially usable results, generate synthetic games, and train a baseline."*
+
+With `AUTH_ENABLED=true`, create a token (Sources panel → *Create connector token*, or `POST /api/auth/token`) and pass it as `DATAFORGE_TOKEN` in the `env` above. The connector acts as that user.
+
+**Over HTTP** (another machine, or a server): run `python -m app.mcp_server --http --port 8765 --token "$MCP_TOKEN"` (add `--allowed-host your.domain` behind a tunnel or proxy), then in Claude Code: `claude mcp add --transport http dataforge https://your.domain/mcp --header "Authorization: Bearer $MCP_TOKEN"`. claude.ai in the browser can't send a fixed token header, so it isn't supported yet; it would need OAuth on the connector.
 
 ## Writing a connector plugin
 

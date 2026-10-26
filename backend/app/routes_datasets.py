@@ -280,6 +280,11 @@ def jsonable(value):
     return _jsonable(value) if isinstance(value, (bytes, datetime)) else value
 
 
+class CardSections(BaseModel):
+    summary: str = Field(min_length=1, max_length=4000)
+    limitations: list[str] = Field(default_factory=list, max_length=30)
+
+
 @router.post("/versions/{version_id}/card", response_model=VersionOut, dependencies=[write("version")])
 async def regenerate_card(version_id: int, db: Session = Depends(get_db)):
     from .cards import build_card
@@ -287,6 +292,21 @@ async def regenerate_card(version_id: int, db: Session = Depends(get_db)):
     version = _version(db, version_id)
     _done_path(version)
     version.card_md = await build_card(db, version, get_settings())
+    db.commit()
+    return version
+
+
+@router.put("/versions/{version_id}/card", response_model=VersionOut, dependencies=[write("version")])
+def write_card(version_id: int, body: CardSections, db: Session = Depends(get_db)):
+    """Use a summary and limitations written by the caller (e.g. Claude via the connector)."""
+    from .cards import default_limitations, facts, render
+
+    version = _version(db, version_id)
+    _done_path(version)
+    f = facts(db, version)
+    found = default_limitations(f)
+    extra = [x.strip()[:500] for x in body.limitations if x.strip() and x.strip() not in found]
+    version.card_md = render(f, body.summary.strip(), found + extra)
     db.commit()
     return version
 

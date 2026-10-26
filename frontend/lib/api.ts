@@ -422,6 +422,7 @@ export const api = {
   signup: (email: string, password: string, name: string) =>
     call<Me>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password, name }) }),
   logout: () => call<void>("/auth/logout", { method: "POST" }),
+  connectorToken: () => call<{ token: string; expires_in_days: number }>("/auth/token", { method: "POST" }),
   teams: () => call<Team[]>("/teams"),
   createTeam: (name: string) => call<Team>("/teams", { method: "POST", body: JSON.stringify({ name }) }),
   addMember: (teamId: number, email: string, role: string) =>

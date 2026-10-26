@@ -86,6 +86,12 @@ def me(user: User = Depends(current_user)) -> dict:
     return {**_user_out(user), "auth_enabled": get_settings().auth_enabled}
 
 
+@router.post("/auth/token", status_code=201)
+def issue_token(db: Session = Depends(get_db), user: User = Depends(current_user)) -> dict:
+    """A bearer token for scripts and the Claude connector (valid like a login session)."""
+    return {"token": create_session(db, user), "expires_in_days": get_settings().session_days}
+
+
 # ---- teams ------------------------------------------------------------------
 
 class TeamCreate(BaseModel):
